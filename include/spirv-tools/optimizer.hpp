@@ -393,6 +393,9 @@ Optimizer::PassToken CreateCompactIdsPass();
 // Creates a remove duplicate capabilities pass.
 Optimizer::PassToken CreateRemoveDuplicatesPass();
 
+// Creates the load store vectorizer pass.
+Optimizer::PassToken CreateLoadStoreVectorizer();
+
 // Creates a CFG cleanup pass.
 // This pass removes cruft from the control flow graph of functions that are
 // reachable from entry points and exported functions. It currently includes the

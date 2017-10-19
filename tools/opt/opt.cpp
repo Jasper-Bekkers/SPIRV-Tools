@@ -367,6 +367,8 @@ OptStatus ParseFlags(int argc, const char** argv, Optimizer* optimizer,
         optimizer->RegisterPass(CreateFlattenDecorationPass());
       } else if (0 == strcmp(cur_arg, "--compact-ids")) {
         optimizer->RegisterPass(CreateCompactIdsPass());
+	  } else if (0 == strcmp(cur_arg, "--load-store-vectorizer")) {
+		optimizer->RegisterPass(CreateLoadStoreVectorizer());
       } else if (0 == strcmp(cur_arg, "--cfg-cleanup")) {
         optimizer->RegisterPass(CreateCFGCleanupPass());
       } else if (0 == strcmp(cur_arg, "-O")) {

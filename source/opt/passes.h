@@ -41,5 +41,6 @@
 #include "strip_debug_info_pass.h"
 #include "unify_const_pass.h"
 #include "eliminate_dead_functions_pass.h"
+#include "load_store_vectorizer.h"
 
 #endif  // LIBSPIRV_OPT_PASSES_H_
