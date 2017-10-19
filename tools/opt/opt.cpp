@@ -279,6 +279,28 @@ OptStatus ParseOconfigFlag(const char* prog_name, const char* opt_flag,
                     in_file, out_file);
 }
 
+void dump(std::vector<uint32_t> binary)
+{
+	static const auto kDefaultEnvironment = SPV_ENV_UNIVERSAL_1_2;
+	uint32_t options = SPV_BINARY_TO_TEXT_OPTION_NONE;
+	options |= SPV_BINARY_TO_TEXT_OPTION_INDENT;
+	options |= SPV_BINARY_TO_TEXT_OPTION_SHOW_BYTE_OFFSET;
+	//options |= SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES;
+	options |= SPV_BINARY_TO_TEXT_OPTION_COLOR;
+	options |= SPV_BINARY_TO_TEXT_OPTION_PRINT;
+
+	const bool print_to_stdout = true;
+	spv_text text = nullptr;
+	spv_text* textOrNull = print_to_stdout ? nullptr : &text;
+	spv_diagnostic diagnostic = nullptr;
+	spv_context context = spvContextCreate(kDefaultEnvironment);
+	spv_result_t error =
+		spvBinaryToText(context, binary.data(), binary.size(), options,
+			textOrNull, &diagnostic);
+
+	int x = 0;
+}
+
 // Parses command-line flags. |argc| contains the number of command-line flags.
 // |argv| points to an array of strings holding the flags. |optimizer| is the
 // Optimizer instance used to optimize the program.
@@ -439,6 +461,7 @@ int main(int argc, const char** argv) {
   if (!ReadFile<uint32_t>(in_file, "rb", &binary)) {
     return 1;
   }
+  dump(binary);
 
   // Let's do validation first.
   spv_context context = spvContextCreate(target_env);
@@ -456,11 +479,16 @@ int main(int argc, const char** argv) {
 
   // By using the same vector as input and output, we save time in the case
   // that there was no change.
-  bool ok = optimizer.Run(binary.data(), binary.size(), &binary);
+  std::vector<uint32_t> after;
+  bool ok = optimizer.Run(binary.data(), binary.size(), &after);
 
-  if (!WriteFile<uint32_t>(out_file, "wb", binary.data(), binary.size())) {
+  if (!WriteFile<uint32_t>(out_file, "wb", after.data(), after.size())) {
     return 1;
   }
 
+  dump(after);
+
+
+  std::cin.get();
   return ok ? 0 : 1;
 }
