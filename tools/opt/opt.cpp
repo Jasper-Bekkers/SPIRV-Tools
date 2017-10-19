@@ -279,26 +279,24 @@ OptStatus ParseOconfigFlag(const char* prog_name, const char* opt_flag,
                     in_file, out_file);
 }
 
-void dump(std::vector<uint32_t> binary)
-{
-	static const auto kDefaultEnvironment = SPV_ENV_UNIVERSAL_1_2;
-	uint32_t options = SPV_BINARY_TO_TEXT_OPTION_NONE;
-	options |= SPV_BINARY_TO_TEXT_OPTION_INDENT;
-	options |= SPV_BINARY_TO_TEXT_OPTION_SHOW_BYTE_OFFSET;
-	//options |= SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES;
-	options |= SPV_BINARY_TO_TEXT_OPTION_COLOR;
-	options |= SPV_BINARY_TO_TEXT_OPTION_PRINT;
+void dump(std::vector<uint32_t> binary) {
+  static const auto kDefaultEnvironment = SPV_ENV_UNIVERSAL_1_2;
+  uint32_t options = SPV_BINARY_TO_TEXT_OPTION_NONE;
+  options |= SPV_BINARY_TO_TEXT_OPTION_INDENT;
+  options |= SPV_BINARY_TO_TEXT_OPTION_SHOW_BYTE_OFFSET;
+  // options |= SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES;
+  options |= SPV_BINARY_TO_TEXT_OPTION_COLOR;
+  options |= SPV_BINARY_TO_TEXT_OPTION_PRINT;
 
-	const bool print_to_stdout = true;
-	spv_text text = nullptr;
-	spv_text* textOrNull = print_to_stdout ? nullptr : &text;
-	spv_diagnostic diagnostic = nullptr;
-	spv_context context = spvContextCreate(kDefaultEnvironment);
-	spv_result_t error =
-		spvBinaryToText(context, binary.data(), binary.size(), options,
-			textOrNull, &diagnostic);
+  const bool print_to_stdout = true;
+  spv_text text = nullptr;
+  spv_text* textOrNull = print_to_stdout ? nullptr : &text;
+  spv_diagnostic diagnostic = nullptr;
+  spv_context context = spvContextCreate(kDefaultEnvironment);
+  spv_result_t error = spvBinaryToText(context, binary.data(), binary.size(),
+                                       options, textOrNull, &diagnostic);
 
-	int x = 0;
+  int x = 0;
 }
 
 // Parses command-line flags. |argc| contains the number of command-line flags.
@@ -487,7 +485,6 @@ int main(int argc, const char** argv) {
   }
 
   dump(after);
-
 
   std::cin.get();
   return ok ? 0 : 1;
