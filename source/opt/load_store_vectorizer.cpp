@@ -353,8 +353,7 @@ ir::Instruction* LoadStoreVectorizerPass::findVectorInOpAccessChain(
       }
       case SpvOpTypeStruct: {
         const uint32_t curIndex = curWordInstr->GetSingleWordOperand(2);
-        auto structMemberId =
-            typePointedTo->GetSingleWordOperand(curIndex + 1);
+        auto structMemberId = typePointedTo->GetSingleWordOperand(curIndex + 1);
         typePointedTo = def_use_mgr_->GetDef(structMemberId);
         break;
       }
@@ -399,6 +398,22 @@ inline ir::Instruction* LoadStoreVectorizerPass::GetPtr(ir::Instruction* ip,
   const uint32_t ptrId = ip->GetSingleWordInOperand(
       op == SpvOpStore ? kStorePtrIdInIdx : kLoadPtrIdInIdx);
   return GetPtr(ptrId, varId);
+}
+
+std::vector<ir::Instruction>::iterator
+LoadStoreVectorizerPass::FindInBasicBlock(InstVec* bbInstrs,
+                                          const ir::Instruction& toFind) {
+  auto foundIt = std::find_if(
+      bbInstrs->begin(), bbInstrs->end(), [toFind](const ir::Instruction& a) {
+        bool ok = a.opcode() == toFind.opcode() &&
+                  a.result_id() == toFind.result_id() &&
+                  a.type_id() == toFind.type_id() &&
+                  std::equal(a.begin(), a.end(), toFind.begin(), toFind.end());
+
+        return ok;
+      });
+
+  return foundIt;
 }
 
 }  // namespace opt

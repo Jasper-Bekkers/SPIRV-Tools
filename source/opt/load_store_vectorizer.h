@@ -33,37 +33,22 @@ class LoadStoreVectorizerPass : public InlinePass {
 
  private:
   bool RunOnFunction(ir::Function* fp);
-  bool VectorizeChains(InstVec* block_ptr, InstrListMap& map);
-  bool VectorizeInstructions(InstVec* block_ptr,
+  bool VectorizeChains(InstVec* bbInstrs, InstrListMap& map);
+  bool VectorizeInstructions(InstVec* bbInstrs,
                              std::vector<ir::Instruction*>& instrs);
-  bool vectorizeStoreChain(InstVec* block_ptr,
+  bool vectorizeStoreChain(InstVec* bbInstrs,
                            std::vector<ir::Instruction*> operands,
                            std::set<ir::Instruction*>* processed);
-  bool isConsecutiveAccess(ir::Instruction* a, ir::Instruction* b);
+  bool IsConsecutiveAccess(ir::Instruction* a, ir::Instruction* b);
   ir::Instruction* LoadStoreVectorizerPass::findVectorInOpAccessChain(
       ir::Instruction* opAccessChain);
 
   bool IsNonPtrAccessChain(const SpvOp opcode) const;
   ir::Instruction* GetPtr(uint32_t ptrId, uint32_t* varId);
-
   ir::Instruction* GetPtr(ir::Instruction* ip, uint32_t* varId);
 
   std::vector<ir::Instruction>::iterator FindInBasicBlock(
-      InstVec* block_ptr, const ir::Instruction& toFind) {
-    auto foundIt = std::find_if(block_ptr->begin(), block_ptr->end(),
-                                [toFind](const ir::Instruction& a) {
-                                  bool ok =
-                                      a.opcode() == toFind.opcode() &&
-                                      a.result_id() == toFind.result_id() &&
-                                      a.type_id() == toFind.type_id() &&
-                                      std::equal(a.begin(), a.end(),
-                                                 toFind.begin(), toFind.end());
-
-                                  return ok;
-                                });
-
-    return foundIt;
-  }
+      InstVec* bbInstrs, const ir::Instruction& toFind);
 };
 
 }  // namespace opt
