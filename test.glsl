@@ -22,6 +22,7 @@ layout(std430, binding = 2) buffer TestThing4 { MyStruct3 yetAnotherAnotherJaspe
 
 void main()
 {
+
 // folded:
   jasper[0].x = 1;
   jasper[0].y = 2;
@@ -57,7 +58,7 @@ void main()
   more.data = vec4(1, 2, 3, 4);
   yetAnotherJasper[1] = more;
   
-  for(int idx = 0; idx < 20; idx++)
+  for(int idx = 0; idx < int(jasper[3].x); idx++)
   {
   // folded:
     jasper[idx].x = idx;
@@ -78,5 +79,4 @@ void main()
     yetAnotherAnotherJasper[k].data[idx].z = 3;
     yetAnotherAnotherJasper[k].data[idx].w = 4;
   }
-  
 }

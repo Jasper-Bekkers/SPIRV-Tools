@@ -29,12 +29,14 @@ const uint32_t kOpConstantListeralIndex = 0;
 //  - support loads
 //  - support non-vector types such as structs (eg. alias a struct { float
 //  x,y,z,w; } with a vec4)
+//		- most likely this should be done in a seperate pass that
+//refactors struct { float x, y, z, w, bla; } to struct { vec4 xyzw; float bla;
+//}
 //  - add common subexpression elimination to make this pattern work:
 //		- array[idx + 1].x/y/z/w
 //	- improve & fix dead code stripping
 // bugs:
-//  - right now we always emit SpvOpConstantComposite at all times; probably
-//  will break for non constants
+//
 
 template <typename R, typename E>
 bool is_contained(R&& Range, const E& Element) {
@@ -61,16 +63,8 @@ Pass::Status LoadStoreVectorizerPass::Process(ir::Module* module) {
 bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
   bool globalChanged = false;
 
-  // llvm does this post_order
-  // for (auto bi = func->begin(); bi != func->end();) {
   std::map<const ir::BasicBlock*, std::unique_ptr<ir::BasicBlock>>
       replaceBlocks;
-
-  auto ignore_block = [](const ir::BasicBlock*) {};
-  auto ignore_edge = [](const ir::BasicBlock*, const ir::BasicBlock*) {};
-  auto get_structured_successors = [this](const ir::BasicBlock* block) {
-    return &(block2structured_succs_[block]);
-  };
 
   auto post_order = [&](const ir::BasicBlock* bi) {
     uint32_t instIdx = 0;
@@ -109,10 +103,18 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
   };
 
   ComputeStructuredSuccessors(func);
+
+  auto ignore_block = [](const ir::BasicBlock*) {};
+  auto ignore_edge = [](const ir::BasicBlock*, const ir::BasicBlock*) {};
+  auto get_structured_successors = [this](const ir::BasicBlock* block) {
+    return &(block2structured_succs_[block]);
+  };
+
   CFA<ir::BasicBlock>::DepthFirstTraversal(
       &*func->begin(), get_structured_successors, ignore_block, post_order,
       ignore_edge);
 
+  // patch up all basic blocks with their new ops
   for (auto bi = func->begin(); bi != func->end();) {
     auto biPtr = &*bi;
     if (replaceBlocks.count(biPtr)) {
@@ -287,6 +289,13 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
 
   auto opTypeVector = FindVectorInOpAccessChain(chainOperands[0]);
 
+  // if (opTypeVector->opcode() == SpvOpTypeStruct)
+  //{
+  // // 1. We need to rewrite the struct (potentially do this *before* we get
+  // here)
+  // // 2. Patch up all the accesses to the members of the struct
+  //}
+
   if (opTypeVector) {
     std::vector<ir::Instruction> instructions;
 
@@ -381,6 +390,7 @@ ir::Instruction* LoadStoreVectorizerPass::FindVectorInOpAccessChain(
   auto typePointedTo =
       def_use_mgr_->GetDef(baseTypeInstr->GetSingleWordOperand(2));
   for (size_t i = 3; i < opAccessChain->NumOperands(); ++i) {
+    foundVectorInstruction = nullptr;
     const uint32_t curWord = opAccessChain->GetSingleWordOperand(i);
     // Earlier ID checks ensure that cur_word definition exists.
     auto curWordInstr = def_use_mgr_->GetDef(curWord);
@@ -389,12 +399,9 @@ ir::Instruction* LoadStoreVectorizerPass::FindVectorInOpAccessChain(
       case SpvOpTypeVector:
       case SpvOpTypeArray:
       case SpvOpTypeRuntimeArray: {
-        // In OpTypeMatrix, OpTypeVector, OpTypeArray, and OpTypeRuntimeArray,
-        // word 2 is the Element Type.
-        if (typePointedTo->opcode() == SpvOpTypeVector) {
+        // todo: didn't test Array / Matrix yet
+        if (typePointedTo->opcode() == SpvOpTypeVector)
           foundVectorInstruction = typePointedTo;
-        }
-
         typePointedTo =
             def_use_mgr_->GetDef(typePointedTo->GetSingleWordOperand(1));
         break;
@@ -405,18 +412,20 @@ ir::Instruction* LoadStoreVectorizerPass::FindVectorInOpAccessChain(
         typePointedTo = def_use_mgr_->GetDef(structMemberId);
         break;
       }
-      default: { return false; }
+      default: { return nullptr; }
     }
   }
 
   return foundVectorInstruction;
 }
 
+// todo: move this to DefUseManager? stolen from MemPass
 inline bool LoadStoreVectorizerPass::IsNonPtrAccessChain(
     const SpvOp opcode) const {
   return opcode == SpvOpAccessChain || opcode == SpvOpInBoundsAccessChain;
 }
 
+// todo: move this to DefUseManager? stolen from MemPass
 inline ir::Instruction* LoadStoreVectorizerPass::GetPtr(uint32_t ptrId,
                                                         uint32_t* varId) {
   *varId = ptrId;
@@ -448,6 +457,7 @@ inline ir::Instruction* LoadStoreVectorizerPass::GetPtr(
   return GetPtr(ptrId, varId);
 }
 
+// todo: move this to DefUseManager? stolen from MemPass
 std::vector<ir::Instruction>::iterator
 LoadStoreVectorizerPass::FindInBasicBlock(InstVec* bbInstrs,
                                           const ir::Instruction& toFind) {

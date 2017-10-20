@@ -40,7 +40,7 @@ class LoadStoreVectorizerPass : public InlinePass {
                            std::vector<const ir::Instruction*> operands,
                            std::set<const ir::Instruction*>* processed);
   bool IsConsecutiveAccess(const ir::Instruction* a, const ir::Instruction* b);
-  ir::Instruction* FindVectorInOpAccessChain(
+  ir::Instruction* FindCompositeInOpAccessChain(
       const ir::Instruction* opAccessChain);
 
   bool IsNonPtrAccessChain(const SpvOp opcode) const;

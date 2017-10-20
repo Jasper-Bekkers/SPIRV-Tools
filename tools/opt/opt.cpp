@@ -296,7 +296,8 @@ void dump(std::vector<uint32_t> binary) {
   spv_result_t error = spvBinaryToText(context, binary.data(), binary.size(),
                                        options, textOrNull, &diagnostic);
 
-  int x = 0;
+  if (error != SPV_SUCCESS)
+	  __debugbreak();
 }
 
 // Parses command-line flags. |argc| contains the number of command-line flags.
