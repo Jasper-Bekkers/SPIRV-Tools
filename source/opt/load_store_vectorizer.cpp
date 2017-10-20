@@ -142,7 +142,13 @@ bool LoadStoreVectorizerPass::IsConsecutiveAccess(ir::Instruction* a,
       if (opA.type == SPV_OPERAND_TYPE_RESULT_ID) continue;
       if (opB.type == SPV_OPERAND_TYPE_RESULT_ID) continue;
 
-      sameStart &= opA == opB;
+	  bool opsAreSame = opA == opB;
+	  if (!opsAreSame)
+	  {
+		  opsAreSame = AreIdenticalLoads(opA, opB);
+	  }
+
+      sameStart &= opsAreSame;
     }
 
     if (!sameStart) return false;
@@ -414,6 +420,31 @@ LoadStoreVectorizerPass::FindInBasicBlock(InstVec* bbInstrs,
       });
 
   return foundIt;
+}
+
+
+bool LoadStoreVectorizerPass::AreIdenticalLoads(const ir::Operand& opA, const ir::Operand& opB)
+{
+	ir::Instruction* instrA = def_use_mgr_->GetDef(opA.words[0]);
+	ir::Instruction* instrB = def_use_mgr_->GetDef(opB.words[0]);
+
+	if (instrA->opcode() != SpvOpLoad || instrB->opcode() != SpvOpLoad)
+		return false;
+
+	// this shouldn't happen due to SSA; but just in case, these are identical
+	if (instrA->result_id() == instrB->result_id())
+		return true;
+
+	uint32_t typeA = instrA->type_id();
+	uint32_t typeB = instrB->type_id();
+
+	uint32_t varA = instrA->GetSingleWordInOperand(0);
+	uint32_t varB = instrB->GetSingleWordInOperand(0);
+
+	if (typeA == typeB && varA == varB)
+		return true;
+
+	return false;
 }
 
 }  // namespace opt

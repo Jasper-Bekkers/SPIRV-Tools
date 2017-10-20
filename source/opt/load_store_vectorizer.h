@@ -48,6 +48,8 @@ class LoadStoreVectorizerPass : public InlinePass {
 
   std::vector<ir::Instruction>::iterator FindInBasicBlock(
       InstVec* bbInstrs, const ir::Instruction& toFind);
+
+  bool AreIdenticalLoads(const ir::Operand& opA, const ir::Operand& opB);
 };
 
 }  // namespace opt
