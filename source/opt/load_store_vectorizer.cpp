@@ -221,7 +221,7 @@ bool LoadStoreVectorizerPass::VectorizeInstructions(
     //	Vectorized = vectorizeLoadChain(Operands, &InstructionsProcessed);
     // else
     vectorized =
-        vectorizeStoreChain(bbInstrs, chainOperands, &instructionsProcessed);
+        VectorizeStoreChain(bbInstrs, chainOperands, &instructionsProcessed);
 
     changed |= vectorized;
   }
@@ -229,7 +229,7 @@ bool LoadStoreVectorizerPass::VectorizeInstructions(
   return changed;
 }
 
-bool LoadStoreVectorizerPass::vectorizeStoreChain(
+bool LoadStoreVectorizerPass::VectorizeStoreChain(
     InstVec* bbInstrs, std::vector<ir::Instruction*> chainOperands,
     std::set<ir::Instruction*>* processed) {
   // 0. Find or create an OpTypeVector
@@ -239,7 +239,7 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
   // OpStore and OpAccessChain
   processed->insert(chainOperands.begin(), chainOperands.end());
 
-  auto opTypeVector = findVectorInOpAccessChain(chainOperands[0]);
+  auto opTypeVector = FindVectorInOpAccessChain(chainOperands[0]);
 
   if (opTypeVector) {
     std::vector<ir::Instruction> instructions;
@@ -318,7 +318,7 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
   return false;
 }
 
-ir::Instruction* LoadStoreVectorizerPass::findVectorInOpAccessChain(
+ir::Instruction* LoadStoreVectorizerPass::FindVectorInOpAccessChain(
     ir::Instruction* opLoadOrOpStore) {
   uint32_t dummy;
   ir::Instruction* opAccessChain = GetPtr(opLoadOrOpStore, &dummy);

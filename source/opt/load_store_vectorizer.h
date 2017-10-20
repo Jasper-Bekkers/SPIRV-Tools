@@ -36,12 +36,11 @@ class LoadStoreVectorizerPass : public InlinePass {
   bool VectorizeChains(InstVec* bbInstrs, InstrListMap& map);
   bool VectorizeInstructions(InstVec* bbInstrs,
                              std::vector<ir::Instruction*>& instrs);
-  bool vectorizeStoreChain(InstVec* bbInstrs,
+  bool VectorizeStoreChain(InstVec* bbInstrs,
                            std::vector<ir::Instruction*> operands,
                            std::set<ir::Instruction*>* processed);
   bool IsConsecutiveAccess(ir::Instruction* a, ir::Instruction* b);
-  ir::Instruction* LoadStoreVectorizerPass::findVectorInOpAccessChain(
-      ir::Instruction* opAccessChain);
+  ir::Instruction* FindVectorInOpAccessChain(ir::Instruction* opAccessChain);
 
   bool IsNonPtrAccessChain(const SpvOp opcode) const;
   ir::Instruction* GetPtr(uint32_t ptrId, uint32_t* varId);
