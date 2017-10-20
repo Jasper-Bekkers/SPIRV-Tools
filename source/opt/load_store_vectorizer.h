@@ -40,7 +40,8 @@ class LoadStoreVectorizerPass : public InlinePass {
                            std::vector<const ir::Instruction*> operands,
                            std::set<const ir::Instruction*>* processed);
   bool IsConsecutiveAccess(const ir::Instruction* a, const ir::Instruction* b);
-  ir::Instruction* FindVectorInOpAccessChain(const ir::Instruction* opAccessChain);
+  ir::Instruction* FindVectorInOpAccessChain(
+      const ir::Instruction* opAccessChain);
 
   bool IsNonPtrAccessChain(const SpvOp opcode) const;
   ir::Instruction* GetPtr(uint32_t ptrId, uint32_t* varId);
@@ -50,7 +51,6 @@ class LoadStoreVectorizerPass : public InlinePass {
       InstVec* bbInstrs, const ir::Instruction& toFind);
 
   bool AreIdenticalLoads(const ir::Operand& opA, const ir::Operand& opB);
-
 };
 
 }  // namespace opt
