@@ -26,7 +26,7 @@ namespace opt {
 // See optimizer.hpp for documentation.
 class LoadStoreVectorizerPass : public InlinePass {
  public:
-  typedef std::map<uint32_t, std::vector<ir::Instruction*>> InstrListMap;
+  typedef std::map<uint32_t, std::vector<const ir::Instruction*>> InstrListMap;
   typedef std::vector<ir::Instruction> InstVec;
   const char* name() const override { return "load-store-vectorizer"; }
   Status Process(ir::Module*) override;
@@ -35,21 +35,22 @@ class LoadStoreVectorizerPass : public InlinePass {
   bool RunOnFunction(ir::Function* fp);
   bool VectorizeChains(InstVec* bbInstrs, InstrListMap& map);
   bool VectorizeInstructions(InstVec* bbInstrs,
-                             std::vector<ir::Instruction*>& instrs);
+                             std::vector<const ir::Instruction*>& instrs);
   bool VectorizeStoreChain(InstVec* bbInstrs,
-                           std::vector<ir::Instruction*> operands,
-                           std::set<ir::Instruction*>* processed);
-  bool IsConsecutiveAccess(ir::Instruction* a, ir::Instruction* b);
-  ir::Instruction* FindVectorInOpAccessChain(ir::Instruction* opAccessChain);
+                           std::vector<const ir::Instruction*> operands,
+                           std::set<const ir::Instruction*>* processed);
+  bool IsConsecutiveAccess(const ir::Instruction* a, const ir::Instruction* b);
+  ir::Instruction* FindVectorInOpAccessChain(const ir::Instruction* opAccessChain);
 
   bool IsNonPtrAccessChain(const SpvOp opcode) const;
   ir::Instruction* GetPtr(uint32_t ptrId, uint32_t* varId);
-  ir::Instruction* GetPtr(ir::Instruction* ip, uint32_t* varId);
+  ir::Instruction* GetPtr(const ir::Instruction* ip, uint32_t* varId);
 
   std::vector<ir::Instruction>::iterator FindInBasicBlock(
       InstVec* bbInstrs, const ir::Instruction& toFind);
 
   bool AreIdenticalLoads(const ir::Operand& opA, const ir::Operand& opB);
+
 };
 
 }  // namespace opt

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "load_store_vectorizer.h"
+#include "cfa.h"
 
 #include <unordered_set>
 
@@ -23,6 +24,15 @@ const uint32_t kCopyObjectOperandInIdx = 0;
 const uint32_t kTypePointerStorageClassInIdx = 0;
 const uint32_t kTypePointerTypeIdInIdx = 1;
 const uint32_t kOpConstantListeralIndex = 0;
+
+// todo:
+//  - support loads
+//  - support non-vector types such as structs (eg. alias a struct { float x,y,z,w; } with a vec4)
+//  - add common subexpression elimination to make this pattern work:
+//		- array[idx + 1].x/y/z/w 
+//	- improve & fix dead code stripping
+// bugs:
+//  - right now we always emit SpvOpConstantComposite at all times; probably will break for non constants
 
 template <typename R, typename E>
 bool is_contained(R&& Range, const E& Element) {
@@ -50,21 +60,29 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
   bool globalChanged = false;
 
   // llvm does this post_order
-  for (auto bi = func->begin(); bi != func->end();) {
+  //for (auto bi = func->begin(); bi != func->end();) {
+  std::map<const ir::BasicBlock*, std::unique_ptr<ir::BasicBlock>> replaceBlocks;
+
+  auto ignore_block = [](const ir::BasicBlock*) {};
+  auto ignore_edge = [](const ir::BasicBlock*, const ir::BasicBlock*) {};
+  auto get_structured_successors = [this](const ir::BasicBlock* block) {
+	  return &(block2structured_succs_[block]); };
+
+  auto post_order = [&](const ir::BasicBlock* bi) {
     uint32_t instIdx = 0;
     InstrListMap storeOps;
 
-    for (auto ii = bi->begin(); ii != bi->end(); ++ii, ++instIdx) {
+    for (auto ii = bi->cbegin(); ii != bi->cend(); ++ii, ++instIdx) {
       switch (ii->opcode()) {
         case SpvOpStore: {
           uint32_t varId;
-          ir::Instruction* ptrInst = GetPtr(&*ii, &varId);
+          ir::Instruction* ptrInst = GetPtr((ir::Instruction*)&*ii, &varId);
           storeOps[varId].push_back(&*ii);
         } break;
       }
     }
 
-    std::vector<ir::Instruction> basicBlockInstructions(bi->begin(), bi->end());
+    std::vector<ir::Instruction> basicBlockInstructions(bi->cbegin(), bi->cend());
 
     bool localChanged = VectorizeChains(&basicBlockInstructions, storeOps);
     globalChanged |= localChanged;
@@ -77,13 +95,26 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
         newBB->AddInstruction(
             std::unique_ptr<ir::Instruction>(new ir::Instruction(i)));
       }
-
-      bi = bi.Erase();
-      bi = bi.InsertBefore(std::move(newBB));
+	  newBB->SetParent(func);
+	  replaceBlocks[&*bi] = std::move(newBB);
       ++bi;
     } else {
       ++bi;
     }
+  };
+
+  ComputeStructuredSuccessors(func);
+  CFA<ir::BasicBlock>::DepthFirstTraversal(&*func->begin(), get_structured_successors, ignore_block, post_order, ignore_edge);
+
+  for (auto bi = func->begin(); bi != func->end();)
+  {
+	  auto biPtr = &*bi;
+	  if (replaceBlocks.count(biPtr))
+	  {
+		  bi = bi.Erase();
+		  bi = bi.InsertBefore(std::move(replaceBlocks[biPtr]));
+	  }
+	  ++bi;
   }
 
   return globalChanged;
@@ -99,7 +130,7 @@ bool LoadStoreVectorizerPass::VectorizeChains(InstVec* block_ptr,
 
     for (unsigned CI = 0, CE = size; CI < CE; CI += 64) {
       unsigned len = std::min<unsigned>(CE - CI, 64);
-      std::vector<ir::Instruction*> chunk(chain.second.begin() + CI,
+      std::vector<const ir::Instruction*> chunk(chain.second.begin() + CI,
                                           chain.second.begin() + CI + len);
       changed |= VectorizeInstructions(block_ptr, chunk);
     }
@@ -108,8 +139,8 @@ bool LoadStoreVectorizerPass::VectorizeChains(InstVec* block_ptr,
   return changed;
 }
 
-bool LoadStoreVectorizerPass::IsConsecutiveAccess(ir::Instruction* a,
-                                                  ir::Instruction* b) {
+bool LoadStoreVectorizerPass::IsConsecutiveAccess(const ir::Instruction* a,
+                                                  const ir::Instruction* b) {
   uint32_t varAId, varBId;
   ir::Instruction* ptrA = GetPtr(a, &varAId);
   ir::Instruction* ptrB = GetPtr(b, &varBId);
@@ -144,6 +175,11 @@ bool LoadStoreVectorizerPass::IsConsecutiveAccess(ir::Instruction* a,
 
       bool opsAreSame = opA == opB;
       if (!opsAreSame) {
+		// the ops are different, check if they are OpLoad's by chance
+		// and if they try to load the same data; this may indicate
+		// array indexing so we want to treat them the same too.
+		// jb-todo: determine if they are the same sub-expression instead
+		// because right now array[idx + 1].x/y/z/w breaks this pattern.
         opsAreSame = AreIdenticalLoads(opA, opB);
       }
 
@@ -171,7 +207,7 @@ bool LoadStoreVectorizerPass::IsConsecutiveAccess(ir::Instruction* a,
 }
 
 bool LoadStoreVectorizerPass::VectorizeInstructions(
-    InstVec* bbInstrs, std::vector<ir::Instruction*>& instrs) {
+    InstVec* bbInstrs, std::vector<const ir::Instruction*>& instrs) {
   std::vector<int> heads, tails;
   int consecutiveChain[64];
 
@@ -197,7 +233,7 @@ bool LoadStoreVectorizerPass::VectorizeInstructions(
     }
   }
 
-  std::set<ir::Instruction*> instructionsProcessed;
+  std::set<const ir::Instruction*> instructionsProcessed;
   bool changed = false;
   for (int head : heads) {
     if (instructionsProcessed.count(instrs[head])) continue;
@@ -212,7 +248,7 @@ bool LoadStoreVectorizerPass::VectorizeInstructions(
 
     // We found an instr that starts a chain. Now follow the chain and try to
     // vectorize it.
-    std::vector<ir::Instruction*> chainOperands;
+    std::vector<const ir::Instruction*> chainOperands;
     int I = head;
     while (I != -1 && (is_contained(tails, I) || is_contained(heads, I))) {
       if (instructionsProcessed.count(instrs[I])) break;
@@ -235,8 +271,8 @@ bool LoadStoreVectorizerPass::VectorizeInstructions(
 }
 
 bool LoadStoreVectorizerPass::VectorizeStoreChain(
-    InstVec* bbInstrs, std::vector<ir::Instruction*> chainOperands,
-    std::set<ir::Instruction*>* processed) {
+    InstVec* bbInstrs, std::vector<const ir::Instruction*> chainOperands,
+    std::set<const ir::Instruction*>* processed) {
   // 0. Find or create an OpTypeVector
   // 1. Create an OpCompositeConstruct with all the same arguments as the
   // OpStores that are in the operands list
@@ -259,7 +295,7 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
         ops.push_back(k->GetOperand(k->NumOperands() - 1));
       }
 
-      ir::Instruction newComposite(SpvOpConstantComposite, 0,
+      ir::Instruction newComposite(SpvOpCompositeConstruct, 0,
                                    opTypeVector->result_id(), ops);
 
       instructions.push_back(newComposite);
@@ -303,18 +339,19 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
     }
 
     // insert our new op-code sequence
-    auto insertPoint = FindInBasicBlock(bbInstrs, *chainOperands[0]);
+    auto insertPoint = FindInBasicBlock(bbInstrs, *chainOperands[chainOperands.size() - 1]);
     bbInstrs->insert(insertPoint, instructions.begin(), instructions.end());
 
     // just nop out the now redundant stores & access chains
     for (auto& oper : chainOperands) {
-      uint32_t dummy;
-      ir::Instruction* opAccessChain = GetPtr(oper, &dummy);
-      auto foundIt = FindInBasicBlock(bbInstrs, *opAccessChain);
-      *foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
+      //uint32_t dummy;
+      //ir::Instruction* opAccessChain = GetPtr(oper, &dummy);
+      //auto foundIt = FindInBasicBlock(bbInstrs, *opAccessChain);
+      //*foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
 
-      foundIt = FindInBasicBlock(bbInstrs, *oper);
+      auto foundIt = FindInBasicBlock(bbInstrs, *oper);
       *foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
+	  //def_use_mgr_->KillDef(oper->result_id());
     }
 
     return true;
@@ -324,7 +361,7 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
 }
 
 ir::Instruction* LoadStoreVectorizerPass::FindVectorInOpAccessChain(
-    ir::Instruction* opLoadOrOpStore) {
+	const ir::Instruction* opLoadOrOpStore) {
   uint32_t dummy;
   ir::Instruction* opAccessChain = GetPtr(opLoadOrOpStore, &dummy);
 
@@ -396,7 +433,7 @@ inline ir::Instruction* LoadStoreVectorizerPass::GetPtr(uint32_t ptrId,
   return ptrInst;
 }
 
-inline ir::Instruction* LoadStoreVectorizerPass::GetPtr(ir::Instruction* ip,
+inline ir::Instruction* LoadStoreVectorizerPass::GetPtr(const ir::Instruction* ip,
                                                         uint32_t* varId) {
   const SpvOp op = ip->opcode();
   assert(op == SpvOpStore || op == SpvOpLoad);
