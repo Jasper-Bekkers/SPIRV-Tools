@@ -22,6 +22,7 @@ const uint32_t kAccessChainPtrIdInIdx = 0;
 const uint32_t kCopyObjectOperandInIdx = 0;
 const uint32_t kTypePointerStorageClassInIdx = 0;
 const uint32_t kTypePointerTypeIdInIdx = 1;
+const uint32_t kOpConstantListeralIndex = 0;
 
 template <typename R, typename E>
 bool is_contained(R&& Range, const E& Element) {
@@ -46,29 +47,29 @@ Pass::Status LoadStoreVectorizerPass::Process(ir::Module* module) {
 }
 
 bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
-  bool changed = false;
+  bool globalChanged = false;
 
   // llvm does this post_order
   for (auto bi = func->begin(); bi != func->end();) {
     uint32_t instIdx = 0;
-    InstrListMap store_ops;
+    InstrListMap storeOps;
 
     for (auto ii = bi->begin(); ii != bi->end(); ++ii, ++instIdx) {
       switch (ii->opcode()) {
         case SpvOpStore: {
           uint32_t varId;
           ir::Instruction* ptrInst = GetPtr(&*ii, &varId);
-          store_ops[varId].push_back(&*ii);
+          storeOps[varId].push_back(&*ii);
         } break;
       }
     }
 
     std::vector<ir::Instruction> basicBlockInstructions(bi->begin(), bi->end());
 
-    bool c = VectorizeChains(&basicBlockInstructions, store_ops);
-    changed |= c;
+    bool localChanged = VectorizeChains(&basicBlockInstructions, storeOps);
+    globalChanged |= localChanged;
 
-    if (c) {
+    if (localChanged) {
       std::unique_ptr<ir::BasicBlock> newBB(
           new ir::BasicBlock(std::move(NewLabel(bi->id()))));
 
@@ -85,7 +86,7 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
     }
   }
 
-  return changed;
+  return globalChanged;
 }
 
 bool LoadStoreVectorizerPass::VectorizeChains(InstVec* block_ptr,
@@ -107,7 +108,7 @@ bool LoadStoreVectorizerPass::VectorizeChains(InstVec* block_ptr,
   return changed;
 }
 
-bool LoadStoreVectorizerPass::isConsecutiveAccess(ir::Instruction* a,
+bool LoadStoreVectorizerPass::IsConsecutiveAccess(ir::Instruction* a,
                                                   ir::Instruction* b) {
   uint32_t varAId, varBId;
   ir::Instruction* ptrA = GetPtr(a, &varAId);
@@ -151,8 +152,6 @@ bool LoadStoreVectorizerPass::isConsecutiveAccess(ir::Instruction* a,
     ir::Instruction* aInst = def_use_mgr_->GetDef(opAEnd.words[0]);
     ir::Instruction* bInst = def_use_mgr_->GetDef(opBEnd.words[0]);
 
-    const uint32_t kOpConstantListeralIndex = 0;
-
     if (aInst->opcode() == SpvOpConstant && bInst->opcode() == SpvOpConstant) {
       uint32_t aValue = aInst->GetSingleWordInOperand(kOpConstantListeralIndex);
       uint32_t bValue = bInst->GetSingleWordInOperand(kOpConstantListeralIndex);
@@ -167,91 +166,91 @@ bool LoadStoreVectorizerPass::isConsecutiveAccess(ir::Instruction* a,
 }
 
 bool LoadStoreVectorizerPass::VectorizeInstructions(
-    InstVec* block_ptr, std::vector<ir::Instruction*>& instrs) {
-  std::vector<int> Heads, Tails;
-  int ConsecutiveChain[64];
+    InstVec* bbInstrs, std::vector<ir::Instruction*>& instrs) {
+  std::vector<int> heads, tails;
+  int consecutiveChain[64];
 
   // Do a quadratic search on all of the given stores and find all of the pairs
   // of stores that follow each other.
   for (int i = 0, e = instrs.size(); i < e; ++i) {
-    ConsecutiveChain[i] = -1;
+    consecutiveChain[i] = -1;
     for (int j = e - 1; j >= 0; --j) {
       if (i == j) continue;
 
-      if (isConsecutiveAccess(instrs[i], instrs[j])) {
-        if (ConsecutiveChain[i] != -1) {
-          int CurDistance = std::abs(ConsecutiveChain[i] - i);
-          int NewDistance = std::abs(ConsecutiveChain[i] - j);
-          if (j < i || NewDistance > CurDistance)
+      if (IsConsecutiveAccess(instrs[i], instrs[j])) {
+        if (consecutiveChain[i] != -1) {
+          int curDistance = std::abs(consecutiveChain[i] - i);
+          int newDistance = std::abs(consecutiveChain[i] - j);
+          if (j < i || newDistance > curDistance)
             continue;  // Should not insert.
         }
 
-        Tails.push_back(j);
-        Heads.push_back(i);
-        ConsecutiveChain[i] = j;
+        tails.push_back(j);
+        heads.push_back(i);
+        consecutiveChain[i] = j;
       }
     }
   }
 
-  std::set<ir::Instruction*> InstructionsProcessed;
+  std::set<ir::Instruction*> instructionsProcessed;
   bool changed = false;
-  for (int Head : Heads) {
-    if (InstructionsProcessed.count(instrs[Head])) continue;
-    bool LongerChainExists = false;
-    for (unsigned TIt = 0; TIt < Tails.size(); TIt++)
-      if (Head == Tails[TIt] &&
-          !InstructionsProcessed.count(instrs[Heads[TIt]])) {
-        LongerChainExists = true;
+  for (int head : heads) {
+    if (instructionsProcessed.count(instrs[head])) continue;
+    bool longerChainExists = false;
+    for (unsigned TIt = 0; TIt < tails.size(); TIt++)
+      if (head == tails[TIt] &&
+          !instructionsProcessed.count(instrs[heads[TIt]])) {
+        longerChainExists = true;
         break;
       }
-    if (LongerChainExists) continue;
+    if (longerChainExists) continue;
 
     // We found an instr that starts a chain. Now follow the chain and try to
     // vectorize it.
-    std::vector<ir::Instruction*> Operands;
-    int I = Head;
-    while (I != -1 && (is_contained(Tails, I) || is_contained(Heads, I))) {
-      if (InstructionsProcessed.count(instrs[I])) break;
+    std::vector<ir::Instruction*> chainOperands;
+    int I = head;
+    while (I != -1 && (is_contained(tails, I) || is_contained(heads, I))) {
+      if (instructionsProcessed.count(instrs[I])) break;
 
-      Operands.push_back(instrs[I]);
-      I = ConsecutiveChain[I];
+      chainOperands.push_back(instrs[I]);
+      I = consecutiveChain[I];
     }
 
-    bool Vectorized = false;
+    bool vectorized = false;
     // if (isa<LoadInst>(*Operands.begin()))
     //	Vectorized = vectorizeLoadChain(Operands, &InstructionsProcessed);
     // else
-    Vectorized =
-        vectorizeStoreChain(block_ptr, Operands, &InstructionsProcessed);
+    vectorized =
+        vectorizeStoreChain(bbInstrs, chainOperands, &instructionsProcessed);
 
-    changed |= Vectorized;
+    changed |= vectorized;
   }
 
   return changed;
 }
 
 bool LoadStoreVectorizerPass::vectorizeStoreChain(
-    InstVec* block_ptr, std::vector<ir::Instruction*> operands,
+    InstVec* bbInstrs, std::vector<ir::Instruction*> chainOperands,
     std::set<ir::Instruction*>* processed) {
   // 0. Find or create an OpTypeVector
   // 1. Create an OpCompositeConstruct with all the same arguments as the
   // OpStores that are in the operands list
   // 2. Replace all OpStore and OpAccessChain's leading here, with a single
   // OpStore and OpAccessChain
-  processed->insert(operands.begin(), operands.end());
+  processed->insert(chainOperands.begin(), chainOperands.end());
 
-  auto opTypeVector = findVectorInOpAccessChain(operands[0]);
+  auto opTypeVector = findVectorInOpAccessChain(chainOperands[0]);
 
   if (opTypeVector) {
     std::vector<ir::Instruction> instructions;
 
-    uint32_t replId = TakeNextId();
+    uint32_t compositeId = TakeNextId();
     {
       std::vector<ir::Operand> ops{
-          {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {replId}}};
+          {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {compositeId}}};
 
       // steal the OpStore operands and put them in an OpConstantComposite
-      for (auto& k : operands) {
+      for (auto& k : chainOperands) {
         ops.push_back(k->GetOperand(k->NumOperands() - 1));
       }
 
@@ -277,7 +276,7 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
     uint32_t accessChainStoreId = TakeNextId();
     {
       uint32_t dummy;
-      ir::Instruction* oldAC = GetPtr(operands[0], &dummy);
+      ir::Instruction* oldAC = GetPtr(chainOperands[0], &dummy);
 
       std::vector<ir::Operand> newACOps{
           {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {accessChainStoreId}}};
@@ -293,23 +292,23 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
       ir::Instruction newStore(
           SpvOpStore, 0, 0,
           {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {accessChainStoreId}},
-           {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {replId}}});
+           {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {compositeId}}});
 
       instructions.push_back(newStore);
     }
 
     // insert our new op-code sequence
-    auto insertPoint = FindInBasicBlock(block_ptr, *operands[0]);
-    block_ptr->insert(insertPoint, instructions.begin(), instructions.end());
+    auto insertPoint = FindInBasicBlock(bbInstrs, *chainOperands[0]);
+    bbInstrs->insert(insertPoint, instructions.begin(), instructions.end());
 
     // just nop out the now redundant stores & access chains
-    for (auto& oper : operands) {
+    for (auto& oper : chainOperands) {
       uint32_t dummy;
       ir::Instruction* opAccessChain = GetPtr(oper, &dummy);
-      auto foundIt = FindInBasicBlock(block_ptr, *opAccessChain);
+      auto foundIt = FindInBasicBlock(bbInstrs, *opAccessChain);
       *foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
 
-      foundIt = FindInBasicBlock(block_ptr, *oper);
+      foundIt = FindInBasicBlock(bbInstrs, *oper);
       *foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
     }
 
