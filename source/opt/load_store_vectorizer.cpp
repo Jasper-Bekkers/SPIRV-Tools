@@ -244,10 +244,10 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
   if (opTypeVector) {
     std::vector<ir::Instruction> instructions;
 
-    uint32_t compositeId = TakeNextId();
+    uint32_t opConstantCompositeId = TakeNextId();
     {
       std::vector<ir::Operand> ops{
-          {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {compositeId}}};
+          {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {opConstantCompositeId}}};
 
       // steal the OpStore operands and put them in an OpConstantComposite
       for (auto& k : chainOperands) {
@@ -273,13 +273,13 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
 
     // 1. take the old access chain, chop off the last index
     // 2. rebuild it with the new OpTypePointer that we constructed
-    uint32_t accessChainStoreId = TakeNextId();
+    uint32_t opAccessChainId = TakeNextId();
     {
       uint32_t dummy;
       ir::Instruction* oldAC = GetPtr(chainOperands[0], &dummy);
 
       std::vector<ir::Operand> newACOps{
-          {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {accessChainStoreId}}};
+          {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {opAccessChainId}}};
       newACOps.insert(newACOps.end(), oldAC->begin() + 2, oldAC->end() - 1);
 
       ir::Instruction newAccessStore(SpvOpAccessChain, 0, opTypePointerId,
@@ -291,8 +291,8 @@ bool LoadStoreVectorizerPass::vectorizeStoreChain(
     {
       ir::Instruction newStore(
           SpvOpStore, 0, 0,
-          {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {accessChainStoreId}},
-           {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {compositeId}}});
+          {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {opAccessChainId}},
+           {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {opConstantCompositeId}}});
 
       instructions.push_back(newStore);
     }
@@ -333,9 +333,9 @@ ir::Instruction* LoadStoreVectorizerPass::findVectorInOpAccessChain(
   auto typePointedTo =
       def_use_mgr_->GetDef(baseTypeInstr->GetSingleWordOperand(2));
   for (size_t i = 3; i < opAccessChain->NumOperands(); ++i) {
-    const uint32_t cur_word = opAccessChain->GetSingleWordOperand(i);
+    const uint32_t curWord = opAccessChain->GetSingleWordOperand(i);
     // Earlier ID checks ensure that cur_word definition exists.
-    auto cur_word_instr = def_use_mgr_->GetDef(cur_word);
+    auto curWordInstr = def_use_mgr_->GetDef(curWord);
     switch (typePointedTo->opcode()) {
       case SpvOpTypeMatrix:
       case SpvOpTypeVector:
@@ -352,9 +352,9 @@ ir::Instruction* LoadStoreVectorizerPass::findVectorInOpAccessChain(
         break;
       }
       case SpvOpTypeStruct: {
-        const uint32_t cur_index = cur_word_instr->GetSingleWordOperand(2);
+        const uint32_t curIndex = curWordInstr->GetSingleWordOperand(2);
         auto structMemberId =
-            typePointedTo->GetSingleWordOperand(cur_index + 1);
+            typePointedTo->GetSingleWordOperand(curIndex + 1);
         typePointedTo = def_use_mgr_->GetDef(structMemberId);
         break;
       }
