@@ -337,10 +337,10 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
                        type_inst->GetSingleWordOperand(kOperandTypeIdx);
           });
 
-//      if (foundIt == module_->types_values_end())
+      if (foundIt == module_->types_values_end())
         module_->AddType(std::move(type_inst));
-  //    else
-  //      opTypePointerId = foundIt->result_id();
+      else
+        opTypePointerId = foundIt->result_id();
     }
 
     // 1. take the old access chain, chop off the last index
