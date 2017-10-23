@@ -25,12 +25,15 @@ const uint32_t kTypePointerStorageClassInIdx = 0;
 const uint32_t kTypePointerTypeIdInIdx = 1;
 const uint32_t kOpConstantListeralIndex = 0;
 
+const uint32_t kStorageClassIdx = 1;
+const uint32_t kOperandTypeIdx = 2;
+
 // todo:
 //  - support loads
 //  - support non-vector types such as structs (eg. alias a struct { float
 //  x,y,z,w; } with a vec4)
-//		- most likely this should be done in a seperate pass that
-//refactors struct { float x, y, z, w, bla; } to struct { vec4 xyzw; float bla;
+//		- most likely this should be done in a separate pass that
+// refactors struct { float x, y, z, w, bla; } to struct { vec4 xyzw; float bla;
 //}
 //  - add common subexpression elimination to make this pattern work:
 //		- array[idx + 1].x/y/z/w
@@ -317,13 +320,27 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
 
     uint32_t opTypePointerId = TakeNextId();
     {
-      ir::Instruction type_inst(
+      std::unique_ptr<ir::Instruction> type_inst(new ir::Instruction(
           SpvOpTypePointer, 0, opTypePointerId,
           {{spv_operand_type_t::SPV_OPERAND_TYPE_STORAGE_CLASS,
             {uint32_t(SpvStorageClassUniform)}},
            {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
-            {opTypeVector->result_id()}}});
-      instructions.push_back(type_inst);
+            {opTypeVector->result_id()}}}));
+
+      auto foundIt = std::find_if(
+          module_->types_values_begin(), module_->types_values_end(),
+          [&type_inst](const ir::Instruction& a) {
+            return a.opcode() == type_inst->opcode() &&
+                   a.GetSingleWordOperand(kStorageClassIdx) ==
+                       type_inst->GetSingleWordOperand(kStorageClassIdx) &&
+                   a.GetSingleWordOperand(kOperandTypeIdx) ==
+                       type_inst->GetSingleWordOperand(kOperandTypeIdx);
+          });
+
+//      if (foundIt == module_->types_values_end())
+        module_->AddType(std::move(type_inst));
+  //    else
+  //      opTypePointerId = foundIt->result_id();
     }
 
     // 1. take the old access chain, chop off the last index
@@ -359,14 +376,25 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
 
     // just nop out the now redundant stores & access chains
     for (auto& oper : chainOperands) {
-      // uint32_t dummy;
-      // ir::Instruction* opAccessChain = GetPtr(oper, &dummy);
-      // auto foundIt = FindInBasicBlock(bbInstrs, *opAccessChain);
-      //*foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
+      uint32_t varId;
+      const ir::Instruction* ptrInst = GetPtr(oper, &varId);
 
-      auto foundIt = FindInBasicBlock(bbInstrs, *oper);
-      *foundIt = ir::Instruction(SpvOpNop, 0, 0, {});
-      // def_use_mgr_->KillDef(oper->result_id());
+      // nop out store in basic block copy
+      auto storeOp = &*FindInBasicBlock(bbInstrs, *oper);
+      storeOp->ToNop();
+
+      if (IsNonPtrAccessChain(ptrInst->opcode())) {
+        auto ptrOp = &*FindInBasicBlock(bbInstrs, *ptrInst);
+
+        // if we have multiple uses we just leave the access chain in;
+        // we don't update def_use_mgr_ right now since i'm not sure if it's
+        // correct to do so
+        auto uses = def_use_mgr_->GetUses(ptrInst->result_id());
+        if (uses->size() == 1 && uses->begin()->inst == &*oper) {
+          // nop out OpAccessChain in the basicblock copy
+          ptrOp->ToNop();
+        }
+      }
     }
 
     return true;
