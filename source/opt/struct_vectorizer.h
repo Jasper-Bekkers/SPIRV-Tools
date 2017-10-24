@@ -29,6 +29,12 @@ class StructVectorizerPass : public MemPass {
   const char* name() const override { return "struct-vectorizer"; }
   Status Process(ir::Module*) override;
 
+  uint32_t SafeCreateVectorId(uint32_t floatId, uint32_t numComponents);
+
+  uint32_t SafeCreateFloatType();
+
+  void findAccessChains(uint32_t id,
+                        std::vector<ir::Instruction*>* outOpChains);
 };
 
 }  // namespace opt

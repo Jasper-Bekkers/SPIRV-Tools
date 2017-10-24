@@ -320,7 +320,7 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
 
     uint32_t opTypePointerId = TakeNextId();
     {
-      std::unique_ptr<ir::Instruction> type_inst(new ir::Instruction(
+      std::unique_ptr<ir::Instruction> opTypePointer(new ir::Instruction(
           SpvOpTypePointer, 0, opTypePointerId,
           {{spv_operand_type_t::SPV_OPERAND_TYPE_STORAGE_CLASS,
             {uint32_t(SpvStorageClassUniform)}},
@@ -329,16 +329,16 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
 
       auto foundIt = std::find_if(
           module_->types_values_begin(), module_->types_values_end(),
-          [&type_inst](const ir::Instruction& a) {
-            return a.opcode() == type_inst->opcode() &&
+          [&opTypePointer](const ir::Instruction& a) {
+            return a.opcode() == opTypePointer->opcode() &&
                    a.GetSingleWordOperand(kStorageClassIdx) ==
-                       type_inst->GetSingleWordOperand(kStorageClassIdx) &&
+                       opTypePointer->GetSingleWordOperand(kStorageClassIdx) &&
                    a.GetSingleWordOperand(kOperandTypeIdx) ==
-                       type_inst->GetSingleWordOperand(kOperandTypeIdx);
+                       opTypePointer->GetSingleWordOperand(kOperandTypeIdx);
           });
 
       if (foundIt == module_->types_values_end())
-        module_->AddType(std::move(type_inst));
+        module_->AddType(std::move(opTypePointer));
       else
         opTypePointerId = foundIt->result_id();
     }
