@@ -392,7 +392,11 @@ OptStatus ParseFlags(int argc, const char** argv, Optimizer* optimizer,
 		optimizer->RegisterPass(CreateLoadStoreVectorizer());
       } else if (0 == strcmp(cur_arg, "--cfg-cleanup")) {
         optimizer->RegisterPass(CreateCFGCleanupPass());
-      } else if (0 == strcmp(cur_arg, "-O")) {
+      }
+	  else if (0 == strcmp(cur_arg, "--struct-vectorizer")) {
+		  optimizer->RegisterPass(CreateStructVectorizer());
+	  }
+	  else if (0 == strcmp(cur_arg, "-O")) {
         optimizer->RegisterPerformancePasses();
       } else if (0 == strcmp(cur_arg, "-Os")) {
         optimizer->RegisterSizePasses();

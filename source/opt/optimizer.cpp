@@ -242,6 +242,11 @@ Optimizer::PassToken CreateLoadStoreVectorizer() {
     MakeUnique<opt::LoadStoreVectorizerPass>());
 }
 
+Optimizer::PassToken CreateStructVectorizer() {
+	return MakeUnique<Optimizer::PassToken::Impl>(
+		MakeUnique<opt::StructVectorizerPass>());
+}
+
 std::vector<const char*> Optimizer::GetPassNames() const {
   std::vector<const char*> v;
   for (uint32_t i = 0; i < impl_->pass_manager.NumPasses(); i++) {

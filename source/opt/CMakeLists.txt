@@ -54,6 +54,7 @@ add_library(SPIRV-Tools-opt
   set_spec_constant_default_value_pass.h
   strength_reduction_pass.h
   strip_debug_info_pass.h
+  struct_vectorizer.h
   types.h
   type_manager.h
   unify_const_pass.h
@@ -96,6 +97,7 @@ add_library(SPIRV-Tools-opt
   pass_manager.cpp
   strength_reduction_pass.cpp
   strip_debug_info_pass.cpp
+  struct_vectorizer.cpp
   types.cpp
   type_manager.cpp
   unify_const_pass.cpp
