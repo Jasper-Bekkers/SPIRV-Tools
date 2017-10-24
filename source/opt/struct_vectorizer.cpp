@@ -80,7 +80,7 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
         std::vector<ir::Instruction*> accessChains;
         findAccessChains(s->result_id(), &accessChains);
 
-		auto floatId = SafeCreateFloatType();
+        auto floatId = SafeCreateFloatType();
 
         // patch up access chains
         for (auto& opAC : accessChains) {
@@ -99,10 +99,11 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
         // 2. find or create a vec4 of float32
         // 3. replace struct we found
 
-		auto vectorId = SafeCreateVectorId(floatId, 4 /* hardcode 4 components*/);
+        auto vectorId =
+            SafeCreateVectorId(floatId, 4 /* hardcode 4 components*/);
 
         auto structId = TakeNextId();
-
+        // todo: copy over the rest of the struct
         std::unique_ptr<ir::Instruction> opStruct(new ir::Instruction(
             SpvOpTypeStruct, 0, structId,
             {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(vectorId)}}}));
@@ -126,21 +127,22 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
         auto uses = def_use_mgr_->GetUses(s->result_id());
         if (uses) {
+        reset:
           for (auto& instr : *uses) {
             switch (instr.inst->opcode()) {
               case SpvOpMemberName:
               case SpvOpMemberDecorate:
-                instr.inst->ToNop();
+                def_use_mgr_->KillInst(instr.inst);
+                goto reset;
                 break;
             }
           }
         }
 
-        def_use_mgr_->AnalyzeInstDefUse(&*s);
-
         def_use_mgr_->ReplaceAllUsesWith(s->result_id(), structId);
         def_use_mgr_->KillInst(&*s);
-        s->ToNop();
+
+        MoveTypesDownRecursively(structId);
 
         module_->AddAnnotationInst(std::move(opMemberDecorate));
 
@@ -154,56 +156,71 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
                   : Pass::Status::SuccessWithoutChange;
 }
 
+void StructVectorizerPass::MoveTypesDownRecursively(uint32_t typeId) {
+  auto uses = def_use_mgr_->GetUses(typeId);
+  if (uses) {
+    for (auto& t : *uses) {
+      if (spvOpcodeGeneratesType(t.inst->opcode()) ||
+          t.inst->opcode() == SpvOpVariable) {
+        std::unique_ptr<ir::Instruction> newInst(new ir::Instruction(*t.inst));
+        auto newId = newInst->result_id();
+        module_->AddType(std::move(newInst));
+        t.inst->ToNop();
 
-uint32_t StructVectorizerPass::SafeCreateVectorId(uint32_t floatId, uint32_t numComponents)
-{
-	auto vectorId = TakeNextId();
-
-	std::unique_ptr<ir::Instruction> opVec4(new ir::Instruction(
-		SpvOpTypeVector, 0, vectorId,
-		{ {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {floatId}},
-		 {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-		  { numComponents}} }));
-
-	auto foundIt = std::find_if(
-		module_->types_values_begin(), module_->types_values_end(),
-		[&opVec4](const ir::Instruction& a) {
-		return a.opcode() == opVec4->opcode() &&
-			a.GetSingleWordOperand(1) == opVec4->GetSingleWordOperand(1) &&
-			a.GetSingleWordOperand(2) == opVec4->GetSingleWordOperand(2);
-	});
-
-	if (foundIt == module_->types_values_end())
-		module_->AddType(std::move(opVec4));
-	else
-		vectorId = foundIt->result_id();
-
-	return vectorId;
+        MoveTypesDownRecursively(newId);
+      }
+    }
+  }
 }
 
-uint32_t StructVectorizerPass::SafeCreateFloatType()
-{
-	auto floatId = TakeNextId();
+uint32_t StructVectorizerPass::SafeCreateVectorId(uint32_t floatId,
+                                                  uint32_t numComponents) {
+  auto vectorId = TakeNextId();
 
-	std::unique_ptr<ir::Instruction> opFloat(new ir::Instruction(
-		SpvOpTypeFloat, 0, floatId,
-		{ {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-		  {32 /* hardcode bit depth */}} }));
+  std::unique_ptr<ir::Instruction> opVec4(new ir::Instruction(
+      SpvOpTypeVector, 0, vectorId,
+      {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {floatId}},
+       {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+        {numComponents}}}));
 
-	auto foundIt = std::find_if(
-		module_->types_values_begin(), module_->types_values_end(),
-		[&opFloat](const ir::Instruction& a) {
-		return a.opcode() == opFloat->opcode() &&
-			a.GetSingleWordOperand(kFloatBitdepthIndex) ==
-			opFloat->GetSingleWordOperand(kFloatBitdepthIndex);
-	});
+  auto foundIt = std::find_if(
+      module_->types_values_begin(), module_->types_values_end(),
+      [&opVec4](const ir::Instruction& a) {
+        return a.opcode() == opVec4->opcode() &&
+               a.GetSingleWordOperand(1) == opVec4->GetSingleWordOperand(1) &&
+               a.GetSingleWordOperand(2) == opVec4->GetSingleWordOperand(2);
+      });
 
-	if (foundIt == module_->types_values_end())
-		module_->AddType(std::move(opFloat));
-	else
-		floatId = foundIt->result_id();
+  if (foundIt == module_->types_values_end())
+    module_->AddType(std::move(opVec4));
+  else
+    vectorId = foundIt->result_id();
 
-	return floatId;
+  return vectorId;
+}
+
+uint32_t StructVectorizerPass::SafeCreateFloatType() {
+  auto floatId = TakeNextId();
+
+  std::unique_ptr<ir::Instruction> opFloat(new ir::Instruction(
+      SpvOpTypeFloat, 0, floatId,
+      {{spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+        {32 /* hardcode bit depth */}}}));
+
+  auto foundIt = std::find_if(
+      module_->types_values_begin(), module_->types_values_end(),
+      [&opFloat](const ir::Instruction& a) {
+        return a.opcode() == opFloat->opcode() &&
+               a.GetSingleWordOperand(kFloatBitdepthIndex) ==
+                   opFloat->GetSingleWordOperand(kFloatBitdepthIndex);
+      });
+
+  if (foundIt == module_->types_values_end())
+    module_->AddType(std::move(opFloat));
+  else
+    floatId = foundIt->result_id();
+
+  return floatId;
 }
 
 }  // namespace opt
