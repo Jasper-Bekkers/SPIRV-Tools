@@ -19,6 +19,7 @@
 #include "function.h"
 #include "mem_pass.h"
 #include "module.h"
+#include "type_manager.h"
 
 namespace spvtools {
 namespace opt {
@@ -35,6 +36,11 @@ class StructVectorizerPass : public MemPass {
   void MoveTypesDownRecursively(uint32_t typeId);
   void FindAccessChains(uint32_t id,
                         std::vector<ir::Instruction*>* outOpChains);
+
+  bool StructVectorizerPass::AnalyzeStruct(ir::Instruction* s);
+
+  std::unique_ptr<analysis::TypeManager> type_mgr_;
+
 };
 
 }  // namespace opt

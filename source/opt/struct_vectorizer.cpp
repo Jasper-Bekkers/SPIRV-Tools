@@ -45,11 +45,48 @@ void StructVectorizerPass::FindAccessChains(
   }
 }
 
+bool StructVectorizerPass::AnalyzeStruct(ir::Instruction* structOp) {
+  // try to generate new spans for adjacent of floats
+  // 1. if the alignment of the first float is a multiple of 16
+  // 2. the members next to it are tightly packed on 4 byte boundaries
+  // 3. all members are of the same type
+  // then we can create a new span.
+  //
+  // this function should return true if we've managed to create at least one
+  // new span
+  // this function should return a list of all spans that can be vectorized and
+  // all spans that can't (so we can re-assemble the struct properly)
+	using namespace analysis;
+
+	Type* t = type_mgr_->GetType(structOp->result_id());
+
+	if (Struct* s = t->AsStruct())
+	{
+		auto& elementTypes = s->element_types();
+
+		if (elementTypes.size() >= 4)
+		{
+			bool allAreFloats = true;
+
+			for(auto& el : elementTypes)
+			{
+
+				allAreFloats &= !!el->AsFloat();
+			}
+
+			return allAreFloats;
+		}
+  }
+
+  return false;
+}
+
 // transforms struct { float x,y,z,w; } to struct { vec4 data; }
 Pass::Status StructVectorizerPass::Process(ir::Module* module) {
   bool modified = false;
   module_ = module;
   def_use_mgr_.reset(new analysis::DefUseManager(consumer(), module));
+  type_mgr_.reset(new analysis::TypeManager(consumer(), *module));
   InitNextId();
   FindNamedOrDecoratedIds();
 
@@ -62,94 +99,80 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
   for (auto& s : structs) {
     // check to see if we have exactly 4 members for now
-    if (s->NumOperands() - 1 == 4) {
-      bool allAreFloats = true;
-      for (uint32_t i = 1; i < s->NumInOperands(); i++) {
-        const ir::Instruction* member =
-            def_use_mgr_->GetDef(s->GetSingleWordOperand(i));
+    if (AnalyzeStruct(&*s)) {
+      // 1. create a vec4 type if it doesn't exist yet
+      // 2. replace the struct content from 4 floats, to the vec4
+      // 3. patch up all access chains to point to the vec4, so need to insert
+      // an extra index in the chain
+      std::vector<ir::Instruction*> accessChains;
+      FindAccessChains(s->result_id(), &accessChains);
 
-        // todo: make sure the OpMemberDecorate offsets are adjacent to
-        // eachother
-        allAreFloats &= (member->opcode() == SpvOpTypeFloat);
+      auto floatId = SafeCreateFloatType();
+
+      // patch up access chains
+      for (auto& opAC : accessChains) {
+        std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
+        ops.insert(ops.end() - 1, {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
+                                   {13 /* hardcode 13 for 0*/}});
+
+        std::unique_ptr<ir::Instruction> opNewAC(
+            new ir::Instruction(opAC->opcode(), 0, 0, ops));
+
+        *opAC = *opNewAC;
       }
 
-      if (allAreFloats) {
-        // 1. create a vec4 type if it doesn't exist yet
-        // 2. replace the struct content from 4 floats, to the vec4
-        // 3. patch up all access chains to point to the vec4, so need to insert
-        // an extra index in the chain
-        std::vector<ir::Instruction*> accessChains;
-        FindAccessChains(s->result_id(), &accessChains);
+      // type creation:
+      // 1. find or create a float 32
+      // 2. find or create a vec4 of float32
+      // 3. replace struct we found
 
-        auto floatId = SafeCreateFloatType();
+      auto vectorId = SafeCreateVectorId(floatId, 4 /* hardcode 4 components*/);
 
-        // patch up access chains
-        for (auto& opAC : accessChains) {
-          std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
-          ops.insert(ops.end() - 1, {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
-                                     {13 /* hardcode 13 for 0*/}});
+      auto structId = TakeNextId();
+      // todo: copy over the rest of the struct
+      std::unique_ptr<ir::Instruction> opStruct(new ir::Instruction(
+          SpvOpTypeStruct, 0, structId,
+          {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(vectorId)}}}));
 
-          std::unique_ptr<ir::Instruction> opNewAC(
-              new ir::Instruction(opAC->opcode(), 0, 0, ops));
+      module_->AddType(std::move(opStruct));
 
-          *opAC = *opNewAC;
-        }
+      std::unique_ptr<ir::Instruction> opMemberDecorate(new ir::Instruction(
+          SpvOpMemberDecorate, 0, 0,
+          {
+              {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(structId)}},
+              {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+               {uint32_t(0 /* hardcode member 0*/)}},
+              {spv_operand_type_t::SPV_OPERAND_TYPE_DECORATION,
+               {uint32_t(SpvDecorationOffset)}},
+              {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+               {uint32_t(0 /* hardcode offset 0 bytes from start of struct*/)}},
+          }));
 
-        // type creation:
-        // 1. find or create a float 32
-        // 2. find or create a vec4 of float32
-        // 3. replace struct we found
+      KillNamesAndDecorates(&*s);
 
-        auto vectorId =
-            SafeCreateVectorId(floatId, 4 /* hardcode 4 components*/);
+      auto uses = def_use_mgr_->GetUses(s->result_id());
+      if (uses) {
+        std::vector<ir::Instruction*> killList;
+        for (auto& instr : *uses) {
+          switch (instr.inst->opcode()) {
+            case SpvOpMemberName:
+            case SpvOpMemberDecorate:
+              killList.push_back(instr.inst);
 
-        auto structId = TakeNextId();
-        // todo: copy over the rest of the struct
-        std::unique_ptr<ir::Instruction> opStruct(new ir::Instruction(
-            SpvOpTypeStruct, 0, structId,
-            {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(vectorId)}}}));
-
-        module_->AddType(std::move(opStruct));
-
-        std::unique_ptr<ir::Instruction> opMemberDecorate(new ir::Instruction(
-            SpvOpMemberDecorate, 0, 0,
-            {
-                {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(structId)}},
-                {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-                 {uint32_t(0 /* hardcode member 0*/)}},
-                {spv_operand_type_t::SPV_OPERAND_TYPE_DECORATION,
-                 {uint32_t(SpvDecorationOffset)}},
-                {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-                 {uint32_t(
-                     0 /* hardcode offset 0 bytes from start of struct*/)}},
-            }));
-
-        KillNamesAndDecorates(&*s);
-
-        auto uses = def_use_mgr_->GetUses(s->result_id());
-        if (uses) {
-          std::vector<ir::Instruction*> killList;
-          for (auto& instr : *uses) {
-            switch (instr.inst->opcode()) {
-              case SpvOpMemberName:
-              case SpvOpMemberDecorate:
-                killList.push_back(instr.inst);
-
-                break;
-            }
+              break;
           }
-          for (auto& k : killList) def_use_mgr_->KillInst(k);
         }
-
-        def_use_mgr_->ReplaceAllUsesWith(s->result_id(), structId);
-        def_use_mgr_->KillInst(&*s);
-
-        MoveTypesDownRecursively(structId);
-
-        module_->AddAnnotationInst(std::move(opMemberDecorate));
-
-        modified = true;
+        for (auto& k : killList) def_use_mgr_->KillInst(k);
       }
+
+      def_use_mgr_->ReplaceAllUsesWith(s->result_id(), structId);
+      def_use_mgr_->KillInst(&*s);
+
+      MoveTypesDownRecursively(structId);
+
+      module_->AddAnnotationInst(std::move(opMemberDecorate));
+
+      modified = true;
     }
   }
 
