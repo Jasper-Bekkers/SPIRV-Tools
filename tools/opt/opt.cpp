@@ -480,8 +480,6 @@ int main(int argc, const char** argv) {
   spvDiagnosticDestroy(diagnostic);
   spvContextDestroy(context);
 
-  // By using the same vector as input and output, we save time in the case
-  // that there was no change.
   std::vector<uint32_t> after;
   bool ok = optimizer.Run(binary.data(), binary.size(), &after);
 
