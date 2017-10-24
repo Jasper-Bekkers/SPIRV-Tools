@@ -30,11 +30,6 @@ const uint32_t kOperandTypeIdx = 2;
 
 // todo:
 //  - support loads
-//  - support non-vector types such as structs (eg. alias a struct { float
-//  x,y,z,w; } with a vec4)
-//		- most likely this should be done in a separate pass that
-// refactors struct { float x, y, z, w, bla; } to struct { vec4 xyzw; float bla;
-//}
 //  - add common subexpression elimination to make this pattern work:
 //		- array[idx + 1].x/y/z/w
 //	- improve & fix dead code stripping
@@ -291,13 +286,6 @@ bool LoadStoreVectorizerPass::VectorizeStoreChain(
   processed->insert(chainOperands.begin(), chainOperands.end());
 
   auto opTypeVector = FindVectorInOpAccessChain(chainOperands[0]);
-
-  // if (opTypeVector->opcode() == SpvOpTypeStruct)
-  //{
-  // // 1. We need to rewrite the struct (potentially do this *before* we get
-  // here)
-  // // 2. Patch up all the accesses to the members of the struct
-  //}
 
   if (opTypeVector) {
     std::vector<ir::Instruction> instructions;

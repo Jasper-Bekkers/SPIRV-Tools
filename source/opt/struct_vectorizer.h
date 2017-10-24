@@ -33,7 +33,7 @@ class StructVectorizerPass : public MemPass {
 
   uint32_t SafeCreateFloatType();
   void MoveTypesDownRecursively(uint32_t typeId);
-  void findAccessChains(uint32_t id,
+  void FindAccessChains(uint32_t id,
                         std::vector<ir::Instruction*>* outOpChains);
 };
 

@@ -19,11 +19,12 @@
 // stretch goal:
 //  - support mixed types (eg. f32/f32/int/int where we emit floatToIntBits ops
 //  for half of these)
+//  - support nested structs
 const uint32_t kFloatBitdepthIndex = 1;
 namespace spvtools {
 namespace opt {
 
-void StructVectorizerPass::findAccessChains(
+void StructVectorizerPass::FindAccessChains(
     uint32_t id, std::vector<ir::Instruction*>* outOpChains) {
   auto uses = def_use_mgr_->GetUses(id);
   if (uses) {
@@ -38,7 +39,7 @@ void StructVectorizerPass::findAccessChains(
           spvOpcodeReturnsLogicalPointer(
               instr->opcode())) {  // we probably also need to handle pointer
                                    // variables here
-        findAccessChains(instr->result_id(), outOpChains);
+        FindAccessChains(instr->result_id(), outOpChains);
       }
     }
   }
@@ -78,7 +79,7 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
         // 3. patch up all access chains to point to the vec4, so need to insert
         // an extra index in the chain
         std::vector<ir::Instruction*> accessChains;
-        findAccessChains(s->result_id(), &accessChains);
+        FindAccessChains(s->result_id(), &accessChains);
 
         auto floatId = SafeCreateFloatType();
 
@@ -127,16 +128,17 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
         auto uses = def_use_mgr_->GetUses(s->result_id());
         if (uses) {
-        reset:
+          std::vector<ir::Instruction*> killList;
           for (auto& instr : *uses) {
             switch (instr.inst->opcode()) {
               case SpvOpMemberName:
               case SpvOpMemberDecorate:
-                def_use_mgr_->KillInst(instr.inst);
-                goto reset;
+                killList.push_back(instr.inst);
+
                 break;
             }
           }
+          for (auto& k : killList) def_use_mgr_->KillInst(k);
         }
 
         def_use_mgr_->ReplaceAllUsesWith(s->result_id(), structId);
