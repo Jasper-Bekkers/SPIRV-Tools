@@ -344,10 +344,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
 
     ops[ops.size() - 1].words[0] = MakeConstantInt(newC);
 
-    std::unique_ptr<ir::Instruction> opNewAC(
-        new ir::Instruction(opAC->opcode(), 0, 0, ops));
-
-    *opAC = *opNewAC;
+    opAC->ReplaceOperands(ops);
   }
 
   for (auto& kv : remapAccessChains) {
@@ -359,10 +356,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
     std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
     ops[ops.size() - 1].words[0] = newLastIndex;
 
-    std::unique_ptr<ir::Instruction> opNewAC(
-        new ir::Instruction(opAC->opcode(), 0, 0, ops));
-
-    *opAC = *opNewAC;
+	opAC->ReplaceOperands(ops);;
   }
 }
 

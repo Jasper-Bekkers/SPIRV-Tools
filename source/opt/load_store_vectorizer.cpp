@@ -78,8 +78,9 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
       }
     }
 
-    std::vector<ir::Instruction> basicBlockInstructions(bi->cbegin(),
-                                                        bi->cend());
+	std::vector<ir::Instruction> basicBlockInstructions;
+	for (auto ii = bi->cbegin(); ii != bi->cend(); ++ii)
+		basicBlockInstructions.push_back(*ii);
 
     bool localChanged = VectorizeChains(&basicBlockInstructions, storeOps);
     globalChanged |= localChanged;
