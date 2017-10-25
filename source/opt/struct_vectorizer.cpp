@@ -23,7 +23,7 @@
 
 const uint32_t kFloatBitdepthIndex = 1;
 const uint32_t kConstantValueIndex = 2;
-
+const uint32_t kIntWidthIndex = 1;
 namespace spvtools {
 namespace opt {
 
@@ -266,7 +266,7 @@ uint32_t StructVectorizerPass::MakeConstantInt(uint32_t value) {
 	  auto t = module_->GetTypes();
 	  auto foundIt = std::find_if(t.begin(), t.end(), [](ir::Instruction* instr) {
 		  if (instr->opcode() == SpvOpTypeInt) {
-			  if (instr->GetSingleWordOperand(1) == 32)
+			  if (instr->GetSingleWordOperand(kIntWidthIndex) == 32)
 				  return true;
 		  }
 
@@ -295,7 +295,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
   std::vector<ir::Instruction*> accessChains;
   FindAccessChains(s->result_id(), &accessChains);
 
-  std::vector<std::pair<Span, ir::Instruction*>> vectorizeAccessChains;
+  std::vector<std::tuple<Span, uint32_t, ir::Instruction*>> vectorizeAccessChains;
   std::vector<std::pair<uint32_t, ir::Instruction*>> remapAccessChains;
   for (auto& chain : accessChains) {
     auto last = def_use_mgr_->GetDef(
@@ -309,7 +309,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
       auto& span = spans[remapIdx];
       if (span.shouldVectorize) {
         if (offset >= span.typeIdx && offset < span.typeIdx + span.count) {
-          vectorizeAccessChains.push_back(std::make_pair(span, chain));
+          vectorizeAccessChains.push_back(std::make_tuple(span, remapIdx, chain));
           break;
         }
       } else {
@@ -318,6 +318,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
         // after each new vector member
         if (offset == span.typeIdx && remapIdx != span.typeIdx) {
           remapAccessChains.push_back(std::make_pair(remapIdx, chain));
+		  break;
         }
       }
     }
@@ -325,10 +326,12 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
 
   // patch up access chains
   for (auto& kv : vectorizeAccessChains) {
-    auto& span = kv.first;
-    auto& opAC = kv.second;
+    Span span;
+	uint32_t remapIdx;
+    ir::Instruction* opAC;
+	std::tie(span, remapIdx, opAC) = kv;
 
-    uint32_t indexOffset = MakeConstantInt(span.typeIdx);
+    uint32_t indexOffset = MakeConstantInt(remapIdx);
 
     std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
     ops.insert(ops.end() - 1,
