@@ -39,12 +39,16 @@ class StructVectorizerPass : public MemPass {
 
   struct Span {
     analysis::Type* type;
+    uint32_t typeIdx;
     uint32_t baseOffset;
     uint32_t count;
     bool shouldVectorize;
   };
 
   bool GatherStructSpans(ir::Instruction* s, std::vector<Span>* outSpans);
+  void PatchAccessChains(ir::Instruction* s, const std::vector<Span>& spans);
+  uint32_t GenerateNewStruct(ir::Instruction* s, const std::vector<Span>& spans,
+                             uint32_t vectorId);
 
   std::unique_ptr<analysis::TypeManager> type_mgr_;
 };

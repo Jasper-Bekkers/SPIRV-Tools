@@ -72,7 +72,8 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
       bool baseIsFloat = !!baseFloat;
       uint32_t baseOffset = s->GetElementOffset(baseElementIter);
 
-      Span foundSpan = {elementTypes[baseElementIter], baseOffset, 1, false};
+      Span foundSpan = {elementTypes[baseElementIter], baseElementIter,
+                        baseOffset, 1, false};
 
       if (!baseIsFloat) {
         outSpans->push_back(foundSpan);
@@ -83,7 +84,8 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
       uint32_t widthInBytes = baseFloat->width() / 8;
       uint32_t naturalAlignment = widthInBytes * vectorElementCount;
 
-      if (baseOffset % naturalAlignment == 0 && widthInBytes == 4 /* untested for other sizes */) {
+      if (baseOffset % naturalAlignment == 0 &&
+          widthInBytes == 4 /* untested for other sizes */) {
         for (uint32_t spanElementIter = baseElementIter + 1;
              spanElementIter < elementTypes.size(); spanElementIter++) {
           uint32_t elOffset = s->GetElementOffset(spanElementIter);
@@ -153,25 +155,9 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
       // 2. replace the struct content from 4 floats, to the vec4
       // 3. patch up all access chains to point to the vec4, so need to insert
       // an extra index in the chain
-      std::vector<ir::Instruction*> accessChains;
-      FindAccessChains(s->result_id(), &accessChains);
-
       auto floatId = SafeCreateFloatType();
 
-      // patch up access chains
-      for (auto& opAC : accessChains) {
-        // 1. check if this access chain points into one of our spans
-        // 2. create a OpConstant for the elementIdx (instead of hardcoding 0)
-        // 3. patch the access first to last chain index
-        std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
-        ops.insert(ops.end() - 1, {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
-                                   {13 /* hardcode 13 for 0*/}});
-
-        std::unique_ptr<ir::Instruction> opNewAC(
-            new ir::Instruction(opAC->opcode(), 0, 0, ops));
-
-        *opAC = *opNewAC;
-      }
+      PatchAccessChains(&*s, spans);
 
       // type creation:
       // 1. find or create a float 32
@@ -180,25 +166,7 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
       auto vectorId = SafeCreateVectorId(floatId, 4 /* hardcode 4 components*/);
 
-      auto structId = TakeNextId();
-      // todo: copy over the rest of the struct
-      std::unique_ptr<ir::Instruction> opStruct(new ir::Instruction(
-          SpvOpTypeStruct, 0, structId,
-          {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(vectorId)}}}));
-
-      module_->AddType(std::move(opStruct));
-
-      std::unique_ptr<ir::Instruction> opMemberDecorate(new ir::Instruction(
-          SpvOpMemberDecorate, 0, 0,
-          {
-              {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(structId)}},
-              {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-               {uint32_t(0 /* hardcode member 0*/)}},
-              {spv_operand_type_t::SPV_OPERAND_TYPE_DECORATION,
-               {uint32_t(SpvDecorationOffset)}},
-              {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-               {uint32_t(0 /* hardcode offset 0 bytes from start of struct*/)}},
-          }));
+      uint32_t structId = GenerateNewStruct(&*s, spans, vectorId);
 
       KillNamesAndDecorates(&*s);
 
@@ -222,8 +190,6 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
       MoveTypesDownRecursively(structId);
 
-      module_->AddAnnotationInst(std::move(opMemberDecorate));
-
       modified = true;
     }
   }
@@ -231,6 +197,68 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
   FinalizeNextId();
   return modified ? Pass::Status::SuccessWithChange
                   : Pass::Status::SuccessWithoutChange;
+}
+
+uint32_t StructVectorizerPass::GenerateNewStruct(ir::Instruction* s,
+                                                 const std::vector<Span>& spans,
+                                                 uint32_t vectorId) {
+  auto structId = TakeNextId();
+
+  std::vector<ir::Operand> structMembers;
+
+  for (auto& span : spans) {
+    // todo: copy over the rest of the struct
+    if (!span.shouldVectorize) {
+      auto op = s->GetOperand(span.typeIdx + 1);
+      structMembers.push_back(op);
+    } else {
+      ir::Operand op = {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
+                        {uint32_t(vectorId)}};
+      structMembers.push_back(op);
+    }
+
+    std::unique_ptr<ir::Instruction> opMemberDecorate(new ir::Instruction(
+        SpvOpMemberDecorate, 0, 0,
+        {
+            {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(structId)}},
+            {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+             {uint32_t(structMembers.size() - 1)}},
+            {spv_operand_type_t::SPV_OPERAND_TYPE_DECORATION,
+             {uint32_t(SpvDecorationOffset)}},
+            {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+             {uint32_t(span.baseOffset)}},
+        }));
+
+    module_->AddAnnotationInst(std::move(opMemberDecorate));
+  }
+
+  std::unique_ptr<ir::Instruction> opStruct(
+      new ir::Instruction(SpvOpTypeStruct, 0, structId, structMembers));
+
+  module_->AddType(std::move(opStruct));
+
+  return structId;
+}
+
+void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
+                                             const std::vector<Span>& spans) {
+  std::vector<ir::Instruction*> accessChains;
+  FindAccessChains(s->result_id(), &accessChains);
+
+  // patch up access chains
+  for (auto& opAC : accessChains) {
+    // 1. check if this access chain points into one of our spans
+    // 2. create a OpConstant for the elementIdx (instead of hardcoding 0)
+    // 3. patch the access first to last chain index
+    std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
+    ops.insert(ops.end() - 1, {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
+                               {13 /* hardcode 13 for 0*/}});
+
+    std::unique_ptr<ir::Instruction> opNewAC(
+        new ir::Instruction(opAC->opcode(), 0, 0, ops));
+
+    *opAC = *opNewAC;
+  }
 }
 
 void StructVectorizerPass::MoveTypesDownRecursively(uint32_t typeId) {
