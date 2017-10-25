@@ -45,7 +45,8 @@ void StructVectorizerPass::FindAccessChains(
   }
 }
 
-bool StructVectorizerPass::AnalyzeStruct(ir::Instruction* structOp) {
+bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
+                                             std::vector<Span>* outSpans) {
   // try to generate new spans for adjacent of floats
   // 1. if the alignment of the first float is a multiple of 16
   // 2. the members next to it are tightly packed on 4 byte boundaries
@@ -56,26 +57,74 @@ bool StructVectorizerPass::AnalyzeStruct(ir::Instruction* structOp) {
   // new span
   // this function should return a list of all spans that can be vectorized and
   // all spans that can't (so we can re-assemble the struct properly)
-	using namespace analysis;
+  using namespace analysis;
 
-	Type* t = type_mgr_->GetType(structOp->result_id());
+  Type* t = type_mgr_->GetType(structOp->result_id());
 
-	if (Struct* s = t->AsStruct())
-	{
-		auto& elementTypes = s->element_types();
+  if (Struct* s = t->AsStruct()) {
+    auto& elementTypes = s->element_types();
 
-		if (elementTypes.size() >= 4)
-		{
-			bool allAreFloats = true;
+    const uint32_t vectorElementCount = 4;
 
-			for(auto& el : elementTypes)
-			{
+    uint32_t numSpansToVectorize = 0;
+    for (uint32_t baseElementIter = 0; baseElementIter < elementTypes.size();) {
+      Float* baseFloat = elementTypes[baseElementIter]->AsFloat();
+      bool baseIsFloat = !!baseFloat;
+      uint32_t baseOffset = s->GetElementOffset(baseElementIter);
 
-				allAreFloats &= !!el->AsFloat();
-			}
+      Span foundSpan = {elementTypes[baseElementIter], baseOffset, 1, false};
 
-			return allAreFloats;
-		}
+      if (!baseIsFloat) {
+        outSpans->push_back(foundSpan);
+        baseElementIter++;
+        continue;
+      }
+
+      uint32_t widthInBytes = baseFloat->width() / 8;
+      uint32_t naturalAlignment = widthInBytes * vectorElementCount;
+
+      if (baseOffset % naturalAlignment == 0 && widthInBytes == 4 /* untested for other sizes */) {
+        for (uint32_t spanElementIter = baseElementIter + 1;
+             spanElementIter < elementTypes.size(); spanElementIter++) {
+          uint32_t elOffset = s->GetElementOffset(spanElementIter);
+
+          // elements are directly adjacent in memory
+          bool continueSpan =
+              (elOffset == baseOffset + foundSpan.count * widthInBytes);
+
+          // and are all of the same type as base
+          // todo: support mixed types
+          continueSpan &= elementTypes[spanElementIter]->IsSame(
+              elementTypes[baseElementIter]);
+
+          if (!continueSpan) {
+            break;
+          }
+
+          foundSpan.count++;
+
+          if (foundSpan.count == vectorElementCount) {
+            break;
+          }
+        }
+
+        if (foundSpan.count == vectorElementCount) {
+          foundSpan.shouldVectorize = true;
+          numSpansToVectorize++;
+        } else {
+          // didn't find anything worth while, just make it a span of 1 and
+          // continue the search
+          foundSpan.count = 1;
+        }
+
+        baseElementIter += foundSpan.count;
+        outSpans->push_back(foundSpan);
+      } else {
+        outSpans->push_back(foundSpan);
+        baseElementIter++;
+      }
+    }
+    return numSpansToVectorize > 0;
   }
 
   return false;
@@ -98,8 +147,8 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
   }
 
   for (auto& s : structs) {
-    // check to see if we have exactly 4 members for now
-    if (AnalyzeStruct(&*s)) {
+    std::vector<Span> spans;
+    if (GatherStructSpans(&*s, &spans)) {
       // 1. create a vec4 type if it doesn't exist yet
       // 2. replace the struct content from 4 floats, to the vec4
       // 3. patch up all access chains to point to the vec4, so need to insert
@@ -111,6 +160,9 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
       // patch up access chains
       for (auto& opAC : accessChains) {
+        // 1. check if this access chain points into one of our spans
+        // 2. create a OpConstant for the elementIdx (instead of hardcoding 0)
+        // 3. patch the access first to last chain index
         std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
         ops.insert(ops.end() - 1, {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
                                    {13 /* hardcode 13 for 0*/}});

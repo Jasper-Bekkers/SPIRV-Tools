@@ -268,6 +268,7 @@ class Struct : public Type {
 
   bool IsSame(Type* that) const override;
   std::string str() const override;
+  uint32_t GetElementOffset(uint32_t elementIdx) const;
   const std::vector<Type*>& element_types() const { return element_types_; }
   bool decoration_empty() const override {
     return decorations_.empty() && element_decorations_.empty();

@@ -37,10 +37,16 @@ class StructVectorizerPass : public MemPass {
   void FindAccessChains(uint32_t id,
                         std::vector<ir::Instruction*>* outOpChains);
 
-  bool StructVectorizerPass::AnalyzeStruct(ir::Instruction* s);
+  struct Span {
+    analysis::Type* type;
+    uint32_t baseOffset;
+    uint32_t count;
+    bool shouldVectorize;
+  };
+
+  bool GatherStructSpans(ir::Instruction* s, std::vector<Span>* outSpans);
 
   std::unique_ptr<analysis::TypeManager> type_mgr_;
-
 };
 
 }  // namespace opt

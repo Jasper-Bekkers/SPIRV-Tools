@@ -261,6 +261,20 @@ std::string Struct::str() const {
   return oss.str();
 }
 
+
+uint32_t Struct::GetElementOffset(uint32_t elementIdx) const
+{
+	auto elementDecorations = element_decorations_.find(elementIdx);
+	for (auto& d : elementDecorations->second)
+	{
+		if (d[0] == SpvDecorationOffset)
+			return d[1];
+	}
+
+	assert(0); // Each structure-type member must have an Offset Decoration. (Validation Rules for Shader Capabilities)
+	return ~0u;
+}
+
 bool Opaque::IsSame(Type* that) const {
   const Opaque* ot = that->AsOpaque();
   if (!ot) return false;
