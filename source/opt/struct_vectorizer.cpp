@@ -20,7 +20,10 @@
 //  - support mixed types (eg. f32/f32/int/int where we emit floatToIntBits ops
 //  for half of these)
 //  - support nested structs
+
 const uint32_t kFloatBitdepthIndex = 1;
+const uint32_t kConstantValueIndex = 2;
+
 namespace spvtools {
 namespace opt {
 
@@ -207,7 +210,6 @@ uint32_t StructVectorizerPass::GenerateNewStruct(ir::Instruction* s,
   std::vector<ir::Operand> structMembers;
 
   for (auto& span : spans) {
-    // todo: copy over the rest of the struct
     if (!span.shouldVectorize) {
       auto op = s->GetOperand(span.typeIdx + 1);
       structMembers.push_back(op);
@@ -217,10 +219,12 @@ uint32_t StructVectorizerPass::GenerateNewStruct(ir::Instruction* s,
       structMembers.push_back(op);
     }
 
+    // todo: properly emit other OpMemberDecorate's that were part of this
+    // struct?
+
     std::unique_ptr<ir::Instruction> opMemberDecorate(new ir::Instruction(
-        SpvOpMemberDecorate, 0, 0,
+        SpvOpMemberDecorate, structId, 0,
         {
-            {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {uint32_t(structId)}},
             {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
              {uint32_t(structMembers.size() - 1)}},
             {spv_operand_type_t::SPV_OPERAND_TYPE_DECORATION,
@@ -240,19 +244,117 @@ uint32_t StructVectorizerPass::GenerateNewStruct(ir::Instruction* s,
   return structId;
 }
 
+uint32_t StructVectorizerPass::MakeUint32()
+{
+	auto type_id = TakeNextId();
+	ir::Operand widthOperand(spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+	{ 32 });
+	ir::Operand signOperand(spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+	{ 0 });
+	std::unique_ptr<ir::Instruction> newType(new ir::Instruction(
+		SpvOp::SpvOpTypeInt, type_id, 0, { widthOperand, signOperand }));
+	module_->AddType(std::move(newType));
+	return type_id;
+}
+
+uint32_t StructVectorizerPass::MakeConstantInt(uint32_t value) {
+  uint32_t constantId = TakeNextId();
+
+  uint32_t intTypeId = 0;
+
+  {
+	  auto t = module_->GetTypes();
+	  auto foundIt = std::find_if(t.begin(), t.end(), [](ir::Instruction* instr) {
+		  if (instr->opcode() == SpvOpTypeInt) {
+			  if (instr->GetSingleWordOperand(1) == 32)
+				  return true;
+		  }
+
+		  return false;
+	  });
+
+	  if (foundIt != t.end()) {
+		  intTypeId = (*foundIt)->result_id();
+	  }
+	  else {
+		  intTypeId = MakeUint32();
+	  }
+  }
+
+  std::unique_ptr<ir::Instruction> c(new ir::Instruction(
+      SpvOpConstant, intTypeId, constantId,
+      {{spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER, {value}}}));
+
+  module_->AddGlobalValue(std::move(c));
+
+  return constantId;
+}
+
 void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
                                              const std::vector<Span>& spans) {
   std::vector<ir::Instruction*> accessChains;
   FindAccessChains(s->result_id(), &accessChains);
 
+  std::vector<std::pair<Span, ir::Instruction*>> vectorizeAccessChains;
+  std::vector<std::pair<uint32_t, ir::Instruction*>> remapAccessChains;
+  for (auto& chain : accessChains) {
+    auto last = def_use_mgr_->GetDef(
+        chain->GetSingleWordOperand(chain->NumOperands() - 1));
+
+	assert(last->opcode() == SpvOpConstant);
+
+    uint32_t offset = last->GetSingleWordOperand(kConstantValueIndex);
+
+    for (uint32_t remapIdx = 0; remapIdx < spans.size(); remapIdx++) {
+      auto& span = spans[remapIdx];
+      if (span.shouldVectorize) {
+        if (offset >= span.typeIdx && offset < span.typeIdx + span.count) {
+          vectorizeAccessChains.push_back(std::make_pair(span, chain));
+          break;
+        }
+      } else {
+        // other then vectorizing the access-chains that we turned into vector
+        // elements, we also need to re-number all the struct members that came
+        // after each new vector member
+        if (offset == span.typeIdx && remapIdx != span.typeIdx) {
+          remapAccessChains.push_back(std::make_pair(remapIdx, chain));
+        }
+      }
+    }
+  }
+
   // patch up access chains
-  for (auto& opAC : accessChains) {
-    // 1. check if this access chain points into one of our spans
-    // 2. create a OpConstant for the elementIdx (instead of hardcoding 0)
-    // 3. patch the access first to last chain index
+  for (auto& kv : vectorizeAccessChains) {
+    auto& span = kv.first;
+    auto& opAC = kv.second;
+
+    uint32_t indexOffset = MakeConstantInt(span.typeIdx);
+
     std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
-    ops.insert(ops.end() - 1, {spv_operand_type_t::SPV_OPERAND_TYPE_ID,
-                               {13 /* hardcode 13 for 0*/}});
+    ops.insert(ops.end() - 1,
+               {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {indexOffset}});
+
+    auto oldC = def_use_mgr_->GetDef(ops[ops.size() - 1].words[0])
+                    ->GetSingleWordOperand(kConstantValueIndex);
+
+    auto newC = oldC - span.typeIdx;
+
+    ops[ops.size() - 1].words[0] = MakeConstantInt(newC);
+
+    std::unique_ptr<ir::Instruction> opNewAC(
+        new ir::Instruction(opAC->opcode(), 0, 0, ops));
+
+    *opAC = *opNewAC;
+  }
+
+  for (auto& kv : remapAccessChains) {
+    auto& remapIdx = kv.first;
+    auto& opAC = kv.second;
+
+    uint32_t newLastIndex = MakeConstantInt(remapIdx);
+
+    std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
+    ops[ops.size() - 1].words[0] = newLastIndex;
 
     std::unique_ptr<ir::Instruction> opNewAC(
         new ir::Instruction(opAC->opcode(), 0, 0, ops));
