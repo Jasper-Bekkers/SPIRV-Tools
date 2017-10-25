@@ -72,13 +72,12 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
     uint32_t numSpansToVectorize = 0;
     for (uint32_t baseElementIter = 0; baseElementIter < elementTypes.size();) {
       Float* baseFloat = elementTypes[baseElementIter]->AsFloat();
-      bool baseIsFloat = !!baseFloat;
       uint32_t baseOffset = s->GetElementOffset(baseElementIter);
 
       Span foundSpan = {elementTypes[baseElementIter], baseElementIter,
                         baseOffset, 1, false};
 
-      if (!baseIsFloat) {
+      if (!baseFloat) {
         outSpans->push_back(foundSpan);
         baseElementIter++;
         continue;
@@ -244,17 +243,16 @@ uint32_t StructVectorizerPass::GenerateNewStruct(ir::Instruction* s,
   return structId;
 }
 
-uint32_t StructVectorizerPass::MakeUint32()
-{
-	auto type_id = TakeNextId();
-	ir::Operand widthOperand(spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-	{ 32 });
-	ir::Operand signOperand(spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-	{ 0 });
-	std::unique_ptr<ir::Instruction> newType(new ir::Instruction(
-		SpvOp::SpvOpTypeInt, type_id, 0, { widthOperand, signOperand }));
-	module_->AddType(std::move(newType));
-	return type_id;
+uint32_t StructVectorizerPass::MakeUint32() {
+  auto type_id = TakeNextId();
+  ir::Operand widthOperand(spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+                           {32});
+  ir::Operand signOperand(spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+                          {0});
+  std::unique_ptr<ir::Instruction> newType(new ir::Instruction(
+      SpvOp::SpvOpTypeInt, type_id, 0, {widthOperand, signOperand}));
+  module_->AddType(std::move(newType));
+  return type_id;
 }
 
 uint32_t StructVectorizerPass::MakeConstantInt(uint32_t value) {
@@ -263,22 +261,20 @@ uint32_t StructVectorizerPass::MakeConstantInt(uint32_t value) {
   uint32_t intTypeId = 0;
 
   {
-	  auto t = module_->GetTypes();
-	  auto foundIt = std::find_if(t.begin(), t.end(), [](ir::Instruction* instr) {
-		  if (instr->opcode() == SpvOpTypeInt) {
-			  if (instr->GetSingleWordOperand(kIntWidthIndex) == 32)
-				  return true;
-		  }
+    auto t = module_->GetTypes();
+    auto foundIt = std::find_if(t.begin(), t.end(), [](ir::Instruction* instr) {
+      if (instr->opcode() == SpvOpTypeInt) {
+        if (instr->GetSingleWordOperand(kIntWidthIndex) == 32) return true;
+      }
 
-		  return false;
-	  });
+      return false;
+    });
 
-	  if (foundIt != t.end()) {
-		  intTypeId = (*foundIt)->result_id();
-	  }
-	  else {
-		  intTypeId = MakeUint32();
-	  }
+    if (foundIt != t.end()) {
+      intTypeId = (*foundIt)->result_id();
+    } else {
+      intTypeId = MakeUint32();
+    }
   }
 
   std::unique_ptr<ir::Instruction> c(new ir::Instruction(
@@ -295,13 +291,14 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
   std::vector<ir::Instruction*> accessChains;
   FindAccessChains(s->result_id(), &accessChains);
 
-  std::vector<std::tuple<Span, uint32_t, ir::Instruction*>> vectorizeAccessChains;
+  std::vector<std::tuple<Span, uint32_t, ir::Instruction*>>
+      vectorizeAccessChains;
   std::vector<std::pair<uint32_t, ir::Instruction*>> remapAccessChains;
   for (auto& chain : accessChains) {
     auto last = def_use_mgr_->GetDef(
         chain->GetSingleWordOperand(chain->NumOperands() - 1));
 
-	assert(last->opcode() == SpvOpConstant);
+    assert(last->opcode() == SpvOpConstant);
 
     uint32_t offset = last->GetSingleWordOperand(kConstantValueIndex);
 
@@ -309,7 +306,8 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
       auto& span = spans[remapIdx];
       if (span.shouldVectorize) {
         if (offset >= span.typeIdx && offset < span.typeIdx + span.count) {
-          vectorizeAccessChains.push_back(std::make_tuple(span, remapIdx, chain));
+          vectorizeAccessChains.push_back(
+              std::make_tuple(span, remapIdx, chain));
           break;
         }
       } else {
@@ -318,7 +316,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
         // after each new vector member
         if (offset == span.typeIdx && remapIdx != span.typeIdx) {
           remapAccessChains.push_back(std::make_pair(remapIdx, chain));
-		  break;
+          break;
         }
       }
     }
@@ -327,9 +325,9 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
   // patch up access chains
   for (auto& kv : vectorizeAccessChains) {
     Span span;
-	uint32_t remapIdx;
+    uint32_t remapIdx;
     ir::Instruction* opAC;
-	std::tie(span, remapIdx, opAC) = kv;
+    std::tie(span, remapIdx, opAC) = kv;
 
     uint32_t indexOffset = MakeConstantInt(remapIdx);
 
@@ -356,7 +354,7 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
     std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
     ops[ops.size() - 1].words[0] = newLastIndex;
 
-	opAC->ReplaceOperands(ops);;
+    opAC->ReplaceOperands(ops);
   }
 }
 
