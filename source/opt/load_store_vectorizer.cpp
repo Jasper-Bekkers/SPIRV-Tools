@@ -75,6 +75,9 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
           ir::Instruction* ptrInst = GetPtr((ir::Instruction*)&*ii, &varId);
           storeOps[varId].push_back(&*ii);
         } break;
+		case SpvOpLoad: {
+
+		} break;
       }
     }
 
@@ -83,6 +86,8 @@ bool LoadStoreVectorizerPass::RunOnFunction(ir::Function* func) {
       basicBlockInstructions.push_back(*ii);
 
     bool localChanged = VectorizeChains(&basicBlockInstructions, storeOps);
+//	localChanged |= VectorizeChains(&basicBlockInstructions, loadOps);
+
     globalChanged |= localChanged;
 
     if (localChanged) {

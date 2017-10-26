@@ -20,6 +20,8 @@
 //  - support mixed types (eg. f32/f32/int/int where we emit floatToIntBits ops
 //  for half of these)
 //  - support nested structs
+//  - flatten vec2 / vec3 first, then run this pass
+//		- on some hw vec2/vec3 stores are significantly slower then float or vec4 stores so running a pass that removes then, and then runs this pass might yield better access patterns
 
 const uint32_t kFloatBitdepthIndex = 1;
 const uint32_t kConstantValueIndex = 2;
@@ -64,6 +66,22 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
 
   Type* t = type_mgr_->GetType(structOp->result_id());
 
+  auto GetWidth = [](Type* t) {
+	  if (Integer* i = t->AsInteger())
+		  return i->width();
+	  if (Float* f = t->AsFloat())
+		  return f->width();
+	  return 0u;
+  };
+
+  auto GetBase = [](Type* t) -> Type* {
+	  if (Integer* i = t->AsInteger())
+		  return t;
+	  if (Float* f = t->AsFloat())
+		  return t;
+	  return nullptr;
+  };
+
   if (Struct* s = t->AsStruct()) {
     auto& elementTypes = s->element_types();
 
@@ -71,20 +89,22 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
 
     uint32_t numSpansToVectorize = 0;
     for (uint32_t baseElementIter = 0; baseElementIter < elementTypes.size();) {
-      Float* baseFloat = elementTypes[baseElementIter]->AsFloat();
+      Type* base = GetBase(elementTypes[baseElementIter]);
       uint32_t baseOffset = s->GetElementOffset(baseElementIter);
 
       Span foundSpan = {elementTypes[baseElementIter], baseElementIter,
-                        baseOffset, 1, false};
+                        baseOffset, 1, false, false};
 
-      if (!baseFloat) {
+      if (!base) {
         outSpans->push_back(foundSpan);
         baseElementIter++;
         continue;
       }
 
-      uint32_t widthInBytes = baseFloat->width() / 8;
+      uint32_t widthInBytes = GetWidth(base) / 8;
       uint32_t naturalAlignment = widthInBytes * vectorElementCount;
+
+	  bool isMixed = false;
 
       if (baseOffset % naturalAlignment == 0 &&
           widthInBytes == 4 /* untested for other sizes */) {
@@ -96,10 +116,11 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
           bool continueSpan =
               (elOffset == baseOffset + foundSpan.count * widthInBytes);
 
-          // and are all of the same type as base
-          // todo: support mixed types
-          continueSpan &= elementTypes[spanElementIter]->IsSame(
-              elementTypes[baseElementIter]);
+          // using GetBase & GetWidth to support mixed types
+          continueSpan &= GetBase(elementTypes[spanElementIter]) && 
+			  GetWidth(elementTypes[baseElementIter]) == GetWidth(base);
+
+		  isMixed |= elementTypes[spanElementIter]->AsInteger() != elementTypes[baseElementIter]->AsInteger();
 
           if (!continueSpan) {
             break;
@@ -114,6 +135,7 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
 
         if (foundSpan.count == vectorElementCount) {
           foundSpan.shouldVectorize = true;
+		  foundSpan.isMixed = isMixed;
           numSpansToVectorize++;
         } else {
           // didn't find anything worth while, just make it a span of 1 and
@@ -132,6 +154,35 @@ bool StructVectorizerPass::GatherStructSpans(ir::Instruction* structOp,
   }
 
   return false;
+}
+
+void StructVectorizerPass::PatchMixedSpans(ir::Instruction* s,
+	const std::vector<Span>& spans)
+{
+	std::vector<ir::Instruction*> accessChains;
+	FindAccessChains(s->result_id(), &accessChains);
+
+	for (auto& chain : accessChains) {
+		auto uses = def_use_mgr_->GetUses(chain->result_id());
+
+		// 1. find Span corresponding to this access chain
+		// 2. find Load & Store corresponding to this access chain
+		// 3. if the type of the ld/st has changed, insert OpBitcast in the right place
+
+		if (uses)
+		{
+			for (auto& u : *uses)
+			{
+				switch (u.inst->opcode())
+				{
+				case SpvOpStore:
+				{
+					int x = 0;
+				}break;
+				}
+			}
+		}
+	}
 }
 
 // transforms struct { float x,y,z,w; } to struct { vec4 data; }
@@ -159,7 +210,10 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
       // an extra index in the chain
       auto floatId = SafeCreateFloatType();
 
-      PatchAccessChains(&*s, spans);
+	  // patch up all loads/stores to go through a bitcast first
+	  PatchMixedSpans(&*s, spans);
+
+      GatherAccessChainsToPatch(&*s, spans);
 
       // type creation:
       // 1. find or create a float 32
@@ -194,6 +248,43 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
 
       modified = true;
     }
+  }
+
+  {
+	  // patch up access chains
+	  for (auto& kv : vectorizeAccessChains) {
+		  Span span;
+		  uint32_t remapIdx;
+		  ir::Instruction* opAC;
+		  std::tie(span, remapIdx, opAC) = kv;
+
+		  // insert index to 'remapIdx' into access chain, since everything got moved
+		  uint32_t indexOffset = MakeConstantInt(remapIdx);
+
+		  std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
+		  ops.insert(ops.end() - 1, { spv_operand_type_t::SPV_OPERAND_TYPE_ID,{ indexOffset } });
+
+		  // calculate a new index into the vector (based of of the old type index)
+		  auto oldC = def_use_mgr_->GetDef(ops[ops.size() - 1].words[0])
+			  ->GetSingleWordOperand(kConstantValueIndex);
+		  auto newC = oldC - span.typeIdx;
+
+		  ops[ops.size() - 1].words[0] = MakeConstantInt(newC);
+
+		  opAC->ReplaceOperands(ops);
+	  }
+
+	  for (auto& kv : remapAccessChains) {
+		  auto& remapIdx = kv.first;
+		  auto& opAC = kv.second;
+
+		  uint32_t newLastIndex = MakeConstantInt(remapIdx);
+
+		  std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
+		  ops[ops.size() - 1].words[0] = newLastIndex;
+
+		  opAC->ReplaceOperands(ops);
+	  }
   }
 
   FinalizeNextId();
@@ -286,14 +377,11 @@ uint32_t StructVectorizerPass::MakeConstantInt(uint32_t value) {
   return constantId;
 }
 
-void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
+void StructVectorizerPass::GatherAccessChainsToPatch(ir::Instruction* s,
                                              const std::vector<Span>& spans) {
   std::vector<ir::Instruction*> accessChains;
   FindAccessChains(s->result_id(), &accessChains);
 
-  std::vector<std::tuple<Span, uint32_t, ir::Instruction*>>
-      vectorizeAccessChains;
-  std::vector<std::pair<uint32_t, ir::Instruction*>> remapAccessChains;
   for (auto& chain : accessChains) {
     auto last = def_use_mgr_->GetDef(
         chain->GetSingleWordOperand(chain->NumOperands() - 1));
@@ -320,41 +408,6 @@ void StructVectorizerPass::PatchAccessChains(ir::Instruction* s,
         }
       }
     }
-  }
-
-  // patch up access chains
-  for (auto& kv : vectorizeAccessChains) {
-    Span span;
-    uint32_t remapIdx;
-    ir::Instruction* opAC;
-    std::tie(span, remapIdx, opAC) = kv;
-
-    uint32_t indexOffset = MakeConstantInt(remapIdx);
-
-    std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
-    ops.insert(ops.end() - 1,
-               {spv_operand_type_t::SPV_OPERAND_TYPE_ID, {indexOffset}});
-
-    auto oldC = def_use_mgr_->GetDef(ops[ops.size() - 1].words[0])
-                    ->GetSingleWordOperand(kConstantValueIndex);
-
-    auto newC = oldC - span.typeIdx;
-
-    ops[ops.size() - 1].words[0] = MakeConstantInt(newC);
-
-    opAC->ReplaceOperands(ops);
-  }
-
-  for (auto& kv : remapAccessChains) {
-    auto& remapIdx = kv.first;
-    auto& opAC = kv.second;
-
-    uint32_t newLastIndex = MakeConstantInt(remapIdx);
-
-    std::vector<ir::Operand> ops(opAC->begin(), opAC->end());
-    ops[ops.size() - 1].words[0] = newLastIndex;
-
-    opAC->ReplaceOperands(ops);
   }
 }
 

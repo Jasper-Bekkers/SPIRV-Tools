@@ -53,7 +53,7 @@ void main()
   yetAnotherJasper[0].data.z = 2;
   yetAnotherJasper[0].data.w = 3;
 
-// untouched, but correct
+// untouched, but correctmd
   MyStruct2 more;
   more.data = vec4(1, 2, 3, 4);
   yetAnotherJasper[1] = more;
@@ -67,7 +67,7 @@ void main()
     jasper[idx].w = idx;
     
     // todo; missing CSE on 'idx + 1'
-    yetAnotherAnotherJasper[idx + 1].data[idx].x = 1;
+    yetAnotherAnotherJasper[idx + 1].data[idx].x = intBitsToFloat(1);
     yetAnotherAnotherJasper[idx + 1].data[idx].y = 2;
     yetAnotherAnotherJasper[idx + 1].data[idx].z = 3;
     yetAnotherAnotherJasper[idx + 1].data[idx].w = 4;
@@ -79,4 +79,6 @@ void main()
     yetAnotherAnotherJasper[k].data[idx].z = 3;
     yetAnotherAnotherJasper[k].data[idx].w = 4;
   }
+  
+  yetAnotherAnotherJasper[666].data[0].x = intBitsToFloat(1);
 }
