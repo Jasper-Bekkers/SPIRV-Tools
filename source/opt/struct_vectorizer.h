@@ -44,11 +44,13 @@ class StructVectorizerPass : public MemPass {
   };
 
   bool GatherStructSpans(ir::Instruction* s, std::vector<Span>* outSpans);
-  void GatherAccessChainsToPatch(ir::Instruction* s,
-                                 const std::vector<Span>& spans);
+  void GatherAccessChainsToPatch(
+      const std::vector<Span>& spans,
+      const std::vector<ir::Instruction*> accessChains);
   uint32_t GenerateNewStruct(ir::Instruction* s, const std::vector<Span>& spans,
                              uint32_t vectorId);
-  void PatchMixedSpans(uint32_t structResultId);
+  void PatchMixedSpans(uint32_t structResultId,
+                       const std::vector<ir::Instruction*> accessChains);
   uint32_t MakeConstantInt(uint32_t value);
   uint32_t MakeUint32();
   void InitializeTypes();
