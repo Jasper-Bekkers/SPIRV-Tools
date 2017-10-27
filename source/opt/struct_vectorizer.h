@@ -30,9 +30,6 @@ class StructVectorizerPass : public MemPass {
   const char* name() const override { return "struct-vectorizer"; }
   Status Process(ir::Module*) override;
 
-  uint32_t SafeCreateVectorId(uint32_t floatId, uint32_t numComponents);
-
-  uint32_t SafeCreateFloatType();
   void MoveTypesDownRecursively(uint32_t typeId);
   void FindAccessChains(uint32_t id,
                         std::vector<ir::Instruction*>* outOpChains);
@@ -54,11 +51,16 @@ class StructVectorizerPass : public MemPass {
   void PatchMixedSpans(uint32_t structResultId);
   uint32_t MakeConstantInt(uint32_t value);
   uint32_t MakeUint32();
+  void InitializeTypes();
 
   std::vector<std::tuple<Span, uint32_t, ir::Instruction*>>
       vectorizeAccessChains;
   std::vector<std::tuple<Span, uint32_t, ir::Instruction*>> remapAccessChains;
   std::unique_ptr<analysis::TypeManager> type_mgr_;
+  std::unordered_map<uint32_t, Span> vec_result_id_to_span_;
+  uint32_t intTypeId = 0;
+  uint32_t floatTypeId = 0;
+  uint32_t vec4TypeId = 0;
 };
 
 }  // namespace opt

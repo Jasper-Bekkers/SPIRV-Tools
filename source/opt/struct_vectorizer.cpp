@@ -166,20 +166,6 @@ void StructVectorizerPass::PatchMixedSpans(uint32_t structResultId) {
   std::vector<ir::Instruction*> accessChains;
   FindAccessChains(structResultId, &accessChains);
 
-  auto findSpan = [this](uint32_t chainResultId) {
-    for (auto& v : vectorizeAccessChains) {
-      ir::Instruction* chain = std::get<2>(v);
-      if (chainResultId == chain->result_id()) return std::get<0>(v);
-    }
-
-    for (auto& v : remapAccessChains) {
-      ir::Instruction* chain = std::get<2>(v);
-      if (chainResultId == chain->result_id()) return std::get<0>(v);
-    }
-
-    return Span{nullptr};
-  };
-
   Type* t = type_mgr_->GetType(structResultId);
   if (Struct* s = t->AsStruct()) {
     auto elementTypes = s->element_types();
@@ -192,9 +178,7 @@ void StructVectorizerPass::PatchMixedSpans(uint32_t structResultId) {
       // 3. if the type of the ld/st has changed, insert OpBitcast in the right
       // place and fix the access chain type
 
-      Span span = findSpan(chain->result_id());  // todo: speed up by keeping a
-                                                 // hashmap key'd off of the
-                                                 // result_id
+      Span span = vec_result_id_to_span_[chain->result_id()];
 
       if (uses && span.type) {
         assert(span.isMixed);
@@ -214,11 +198,86 @@ void StructVectorizerPass::PatchMixedSpans(uint32_t structResultId) {
                 // type
               }
             } break;
+			case SpvOpLoad: {
+				// 1. insert OpBitcase *after* the load
+			}break;
           }
         }
       }
     }
   }
+}
+
+void StructVectorizerPass::InitializeTypes()
+{
+	// (u)int32
+	auto t = module_->GetTypes();
+
+	{
+		auto foundIt = std::find_if(t.begin(), t.end(), [](ir::Instruction* instr) {
+			if (instr->opcode() == SpvOpTypeInt) {
+				if (instr->GetSingleWordOperand(kIntWidthIndex) == 32) return true;
+			}
+
+			return false;
+		});
+
+		if (foundIt != t.end()) {
+			intTypeId = (*foundIt)->result_id();
+		}
+		else {
+			intTypeId = MakeUint32();
+		}
+	}
+
+	// float32
+	{
+		auto floatId = TakeNextId();
+
+		std::unique_ptr<ir::Instruction> opFloat(new ir::Instruction(
+			SpvOpTypeFloat, 0, floatId,
+			{ { spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+			{ 32 /* hardcode bit depth */ } } }));
+
+		auto foundIt = std::find_if(t.begin(), t.end(),
+			[&opFloat](ir::Instruction* a) {
+			return a->opcode() == opFloat->opcode() &&
+				a->GetSingleWordOperand(kFloatBitdepthIndex) ==
+				opFloat->GetSingleWordOperand(kFloatBitdepthIndex);
+		});
+
+		if (foundIt == t.end())
+			module_->AddType(std::move(opFloat));
+		else
+			floatId = (*foundIt)->result_id();
+
+		floatTypeId = floatId;
+	}
+
+	// vec4 (of float32)
+	{
+		auto vectorId = TakeNextId();
+
+		std::unique_ptr<ir::Instruction> opVec4(new ir::Instruction(
+			SpvOpTypeVector, 0, vectorId,
+			{ { spv_operand_type_t::SPV_OPERAND_TYPE_ID,{ floatTypeId } },
+			{ spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
+			{ 4 /* num components */ } } }));
+
+		auto foundIt = std::find_if(t.begin(), t.end(),
+			[&opVec4](ir::Instruction* a) {
+			return a->opcode() == opVec4->opcode() &&
+				a->GetSingleWordOperand(1) == opVec4->GetSingleWordOperand(1) &&
+				a->GetSingleWordOperand(2) == opVec4->GetSingleWordOperand(2);
+		});
+
+		if (foundIt == t.end())
+			module_->AddType(std::move(opVec4));
+		else
+			vectorId = (*foundIt)->result_id();
+
+		vec4TypeId = vectorId;
+	}
 }
 
 // transforms struct { float x,y,z,w; } to struct { vec4 data; }
@@ -229,6 +288,8 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
   type_mgr_.reset(new analysis::TypeManager(consumer(), *module));
   InitNextId();
   FindNamedOrDecoratedIds();
+
+  InitializeTypes();
 
   std::vector<std::unique_ptr<ir::Instruction>> structs;
   for (auto& instr : module->types_values()) {
@@ -244,7 +305,6 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
       // 2. replace the struct content from 4 floats, to the vec4
       // 3. patch up all access chains to point to the vec4, so need to insert
       // an extra index in the chain
-      auto floatId = SafeCreateFloatType();
 
       GatherAccessChainsToPatch(&*s, spans);
 
@@ -256,9 +316,7 @@ Pass::Status StructVectorizerPass::Process(ir::Module* module) {
       // 2. find or create a vec4 of float32
       // 3. replace struct we found
 
-      auto vectorId = SafeCreateVectorId(floatId, 4 /* hardcode 4 components*/);
-
-      uint32_t structId = GenerateNewStruct(&*s, spans, vectorId);
+      uint32_t structId = GenerateNewStruct(&*s, spans, vec4TypeId);
 
       KillNamesAndDecorates(&*s);
 
@@ -388,25 +446,6 @@ uint32_t StructVectorizerPass::MakeUint32() {
 uint32_t StructVectorizerPass::MakeConstantInt(uint32_t value) {
   uint32_t constantId = TakeNextId();
 
-  uint32_t intTypeId = 0;
-
-  {
-    auto t = module_->GetTypes();
-    auto foundIt = std::find_if(t.begin(), t.end(), [](ir::Instruction* instr) {
-      if (instr->opcode() == SpvOpTypeInt) {
-        if (instr->GetSingleWordOperand(kIntWidthIndex) == 32) return true;
-      }
-
-      return false;
-    });
-
-    if (foundIt != t.end()) {
-      intTypeId = (*foundIt)->result_id();
-    } else {
-      intTypeId = MakeUint32();
-    }
-  }
-
   std::unique_ptr<ir::Instruction> c(new ir::Instruction(
       SpvOpConstant, intTypeId, constantId,
       {{spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER, {value}}}));
@@ -435,6 +474,8 @@ void StructVectorizerPass::GatherAccessChainsToPatch(
         if (offset >= span.typeIdx && offset < span.typeIdx + span.count) {
           vectorizeAccessChains.push_back(
               std::make_tuple(span, remapIdx, chain));
+
+		  vec_result_id_to_span_[chain->result_id()] = span;
           break;
         }
       } else {
@@ -465,56 +506,6 @@ void StructVectorizerPass::MoveTypesDownRecursively(uint32_t typeId) {
       }
     }
   }
-}
-
-uint32_t StructVectorizerPass::SafeCreateVectorId(uint32_t floatId,
-                                                  uint32_t numComponents) {
-  auto vectorId = TakeNextId();
-
-  std::unique_ptr<ir::Instruction> opVec4(new ir::Instruction(
-      SpvOpTypeVector, 0, vectorId,
-      {{spv_operand_type_t::SPV_OPERAND_TYPE_ID, {floatId}},
-       {spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-        {numComponents}}}));
-
-  auto foundIt = std::find_if(
-      module_->types_values_begin(), module_->types_values_end(),
-      [&opVec4](const ir::Instruction& a) {
-        return a.opcode() == opVec4->opcode() &&
-               a.GetSingleWordOperand(1) == opVec4->GetSingleWordOperand(1) &&
-               a.GetSingleWordOperand(2) == opVec4->GetSingleWordOperand(2);
-      });
-
-  if (foundIt == module_->types_values_end())
-    module_->AddType(std::move(opVec4));
-  else
-    vectorId = foundIt->result_id();
-
-  return vectorId;
-}
-
-uint32_t StructVectorizerPass::SafeCreateFloatType() {
-  auto floatId = TakeNextId();
-
-  std::unique_ptr<ir::Instruction> opFloat(new ir::Instruction(
-      SpvOpTypeFloat, 0, floatId,
-      {{spv_operand_type_t::SPV_OPERAND_TYPE_LITERAL_INTEGER,
-        {32 /* hardcode bit depth */}}}));
-
-  auto foundIt = std::find_if(
-      module_->types_values_begin(), module_->types_values_end(),
-      [&opFloat](const ir::Instruction& a) {
-        return a.opcode() == opFloat->opcode() &&
-               a.GetSingleWordOperand(kFloatBitdepthIndex) ==
-                   opFloat->GetSingleWordOperand(kFloatBitdepthIndex);
-      });
-
-  if (foundIt == module_->types_values_end())
-    module_->AddType(std::move(opFloat));
-  else
-    floatId = foundIt->result_id();
-
-  return floatId;
 }
 
 }  // namespace opt
